@@ -60,7 +60,7 @@ func (h *Handler) Handle(ctx context.Context, record slog.Record) error {
 		if len(payload) > 0 {
 			details = payload
 		}
-		h.duck.CaptureLogContextAt(ctx, record.Time, record.Level, record.Message, details)
+		h.duck.LogContextAt(ctx, record.Time, record.Level, record.Message, details)
 	}
 
 	if h.next != nil {

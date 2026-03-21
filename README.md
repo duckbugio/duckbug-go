@@ -25,10 +25,51 @@ go get github.com/duckbugio/duckbug-go
 To install a tagged release:
 
 ```bash
-go get github.com/duckbugio/duckbug-go@v0.1.1
+go get github.com/duckbugio/duckbug-go@v0.2.0
 ```
 
 ## Quick start
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+    "os"
+    "strings"
+
+    duckbug "github.com/duckbugio/duckbug-go"
+)
+
+func main() {
+    dsn := strings.TrimSpace(os.Getenv("DUCKBUG_DSN"))
+    if dsn == "" {
+        log.Fatal("DUCKBUG_DSN is required")
+    }
+
+    duck := duckbug.NewDuck(duckbug.Config{
+        Providers: []duckbug.Provider{
+            duckbug.NewDuckBugProvider(dsn),
+        },
+    })
+    defer duck.Flush(context.Background())
+
+    duck.Log("warning", "payment provider timeout", map[string]any{
+        "provider": "stripe",
+    })
+
+    if err := doWork(); err != nil {
+        duck.Quack(err)
+    }
+}
+```
+
+This is the smallest useful setup: the SDK only needs a DSN. Environment variable naming is up to your application; `DUCKBUG_DSN` is just the simplest convention for examples.
+
+If you want richer context, you can optionally call `SetService(...)`, `SetEnvironment(...)`, `SetRelease(...)`, and `SetServerName(...)` in your app or wrapper.
+
+### HTTP + logging example
 
 ```go
 package main
@@ -55,22 +96,6 @@ func main() {
     duck.SetEnvironment("production")
     duck.SetRelease("checkout@1.2.3")
 
-    duck.CaptureLog("warning", "Payment provider timeout", map[string]any{
-        "provider": "stripe",
-        "attempt":  2,
-    })
-
-    transaction := duck.StartTransaction("POST /checkout", "http.server")
-    transaction.
-        SetContext(map[string]any{"route": "/checkout"}).
-        AddMeasurement("http.response.status_code", 200, "code").
-        Finish("ok")
-    duck.CaptureTransaction(transaction)
-
-    if err := doWork(); err != nil {
-        duck.Quack(err)
-    }
-
     logger := slog.New(duckbugslog.NewHandler(duck, slog.Default().Handler()))
     logger.Warn("checkout degraded", "provider", "stripe")
 
@@ -93,6 +118,7 @@ func main() {
 - `Duck` is the main runtime facade.
 - `Quack(err)` is the branded manual error capture API.
 - `pond.Ripple(...)` builds the context/sanitization subsystem.
+- `Log(...)` is the canonical log capture API.
 - `StartTransaction(...)` and `CaptureTransaction(...)` provide the performance/trace ingest surface.
 
 ## Privacy defaults
@@ -105,7 +131,7 @@ func main() {
 
 ## Runtime defaults
 
-- The first-party provider uses a background queue by default, so `CaptureLog`, `Quack`, `CaptureTransaction` and `slog` bridge calls do not block the hot path on network I/O.
+- The first-party provider uses a background queue by default, so `Log`, `Quack`, `CaptureTransaction` and `slog` bridge calls do not block the hot path on network I/O.
 - The default transport is tuned for application safety: short connection timeout and no retry storm on the request path.
 - `Flush(...)` waits for the provider queue and sends any buffered log/error batches, so it should be called on graceful shutdown.
 
@@ -174,7 +200,7 @@ handler := duckbughttp.Middleware(
     duckbughttp.WithCaptureTransactions(true),
     duckbughttp.WithTransactionSampleRate(0.10),
 )(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-    duck.CaptureLogContext(r.Context(), "info", "request received", map[string]any{
+    duck.LogContext(r.Context(), "info", "request received", map[string]any{
         "path": r.URL.Path,
     })
     w.WriteHeader(http.StatusNoContent)
@@ -232,6 +258,6 @@ Implemented in this iteration:
 
 ## Release process
 
-- Push a semver-style tag like `v0.1.1`.
+- Push a semver-style tag like `v0.2.0`.
 - The release workflow re-runs module checks and creates a GitHub Release.
 - Consumers install the module through the standard Go module mechanism via `go get`.

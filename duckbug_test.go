@@ -84,7 +84,7 @@ func TestDuckBuildsLogPayloadMatchingSchema(t *testing.T) {
 		},
 	})
 
-	duck.CaptureLogContext(ctx, "warning", "Payment provider timeout", map[string]any{
+	duck.LogContext(ctx, "warning", "Payment provider timeout", map[string]any{
 		"password": "super-secret",
 		"attempt":  2,
 	})
@@ -150,7 +150,7 @@ func TestDuckBuildsErrorPayloadMatchingSchema(t *testing.T) {
 		Headers: map[string]any{"Authorization": "Bearer super-secret"},
 	})
 
-	duck.CaptureErrorContextDetails(ctx, errors.New("division by zero"), map[string]any{
+	duck.QuackContextDetails(ctx, errors.New("division by zero"), map[string]any{
 		"token": "secret-token",
 	}, false, "manual_test")
 

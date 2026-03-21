@@ -68,7 +68,7 @@ func Middleware(duck *duckbug.Duck, options ...Option) func(http.Handler) http.H
 				if recovered := recover(); recovered != nil {
 					tracker.statusCode = http.StatusInternalServerError
 					if duck != nil && config.CapturePanics {
-						duck.CaptureRecoveredPanicContext(r.Context(), recovered, "nethttp_middleware")
+						duck.QuackRecoveredPanicContext(r.Context(), recovered, "nethttp_middleware")
 					}
 					captureTransaction(duck, r, tracker.statusCode, tx, true, config)
 					if config.Repanic {

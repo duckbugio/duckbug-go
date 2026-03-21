@@ -83,7 +83,7 @@ func (w *Writer) capture(level zerolog.Level, raw []byte) {
 	if len(details) > 0 {
 		contextValue = details
 	}
-	w.duck.CaptureLogContextAt(context.Background(), at, normalizeLevel(level), message, contextValue)
+	w.duck.LogContextAt(context.Background(), at, normalizeLevel(level), message, contextValue)
 }
 
 func decodePayload(raw []byte) (message string, details map[string]any, level zerolog.Level, at time.Time, ok bool) {

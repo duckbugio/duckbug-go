@@ -87,26 +87,21 @@ func (d *Duck) Quack(err error) {
 }
 
 func (d *Duck) QuackContext(ctx context.Context, err error) {
-	d.captureErrorAt(ctx, err, nil, true, "manual", time.Time{}, "")
+	d.QuackContextDetails(ctx, err, nil, true, "manual")
 }
 
-func (d *Duck) CaptureError(err error) {
-	d.Quack(err)
+func (d *Duck) QuackDetails(err error, details any, handled bool, mechanism string) {
+	d.QuackContextDetails(context.Background(), err, details, handled, mechanism)
 }
 
-func (d *Duck) CaptureErrorContext(ctx context.Context, err error) {
-	d.QuackContext(ctx, err)
-}
-
-func (d *Duck) CaptureErrorDetails(err error, details any, handled bool, mechanism string) {
-	d.CaptureErrorContextDetails(context.Background(), err, details, handled, mechanism)
-}
-
-func (d *Duck) CaptureErrorContextDetails(ctx context.Context, err error, details any, handled bool, mechanism string) {
+func (d *Duck) QuackContextDetails(ctx context.Context, err error, details any, handled bool, mechanism string) {
+	if mechanism == "" {
+		mechanism = "manual"
+	}
 	d.captureErrorAt(ctx, err, details, handled, mechanism, time.Time{}, "")
 }
 
-func (d *Duck) CaptureRecoveredPanicContext(ctx context.Context, recovered any, mechanism string) {
+func (d *Duck) QuackRecoveredPanicContext(ctx context.Context, recovered any, mechanism string) {
 	if recovered == nil {
 		return
 	}
@@ -125,15 +120,15 @@ func (d *Duck) CaptureRecoveredPanicContext(ctx context.Context, recovered any, 
 	)
 }
 
-func (d *Duck) CaptureLog(level any, message string, details any) {
-	d.CaptureLogContextAt(context.Background(), time.Time{}, level, message, details)
+func (d *Duck) Log(level any, message string, details any) {
+	d.LogContextAt(context.Background(), time.Time{}, level, message, details)
 }
 
-func (d *Duck) CaptureLogContext(ctx context.Context, level any, message string, details any) {
-	d.CaptureLogContextAt(ctx, time.Time{}, level, message, details)
+func (d *Duck) LogContext(ctx context.Context, level any, message string, details any) {
+	d.LogContextAt(ctx, time.Time{}, level, message, details)
 }
 
-func (d *Duck) CaptureLogContextAt(ctx context.Context, at time.Time, level any, message string, details any) {
+func (d *Duck) LogContextAt(ctx context.Context, at time.Time, level any, message string, details any) {
 	if d == nil {
 		return
 	}
@@ -151,26 +146,6 @@ func (d *Duck) CaptureLogContextAt(ctx context.Context, at time.Time, level any,
 	}
 
 	d.dispatch(ctx, NewEvent(EventTypeLog, payload))
-}
-
-func (d *Duck) Debug(message string, details any) {
-	d.CaptureLog(LevelDebug, message, details)
-}
-
-func (d *Duck) Info(message string, details any) {
-	d.CaptureLog(LevelInfo, message, details)
-}
-
-func (d *Duck) Warn(message string, details any) {
-	d.CaptureLog(LevelWarn, message, details)
-}
-
-func (d *Duck) Error(message string, details any) {
-	d.CaptureLog(LevelError, message, details)
-}
-
-func (d *Duck) Fatal(message string, details any) {
-	d.CaptureLog(LevelFatal, message, details)
 }
 
 func (d *Duck) StartTransaction(name string, op string) *Transaction {

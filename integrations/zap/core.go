@@ -72,7 +72,7 @@ func (c *Core) Write(entry zapcore.Entry, fields []zapcore.Field) error {
 		if at.IsZero() {
 			at = time.Time{}
 		}
-		c.duck.CaptureLogContextAt(context.Background(), at, normalizeLevel(entry.Level), entry.Message, payload)
+		c.duck.LogContextAt(context.Background(), at, normalizeLevel(entry.Level), entry.Message, payload)
 	}
 
 	if c.next != nil {

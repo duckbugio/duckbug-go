@@ -39,7 +39,7 @@ func TestMiddlewareAttachesRequestContext(t *testing.T) {
 	})
 
 	handler := Middleware(duck, WithReadBody(true))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		duck.CaptureLogContext(r.Context(), "info", "request received", map[string]any{
+		duck.LogContext(r.Context(), "info", "request received", map[string]any{
 			"password": "123456",
 		})
 		w.WriteHeader(http.StatusNoContent)
