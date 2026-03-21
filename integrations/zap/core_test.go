@@ -1,15 +1,17 @@
-package slogduckbug
+package zapduckbug
 
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"sync"
 	"testing"
 	"time"
 
 	duckbug "github.com/duckbugio/duckbug-go"
 	"github.com/duckbugio/duckbug-go/pond"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 type captureProvider struct {
@@ -26,7 +28,7 @@ func (p *captureProvider) CaptureEvent(_ context.Context, event duckbug.Event) {
 	p.events = append(p.events, cloned)
 }
 
-func TestHandlerCapturesSlogRecord(t *testing.T) {
+func TestCoreCapturesZapEntry(t *testing.T) {
 	t.Parallel()
 
 	provider := &captureProvider{}
@@ -40,9 +42,15 @@ func TestHandlerCapturesSlogRecord(t *testing.T) {
 		},
 	})
 
-	logger := slog.New(NewHandler(duck, nil, WithMinLevel(slog.LevelInfo))).With("service", "api")
-	logger.Info("hello", "count", 2)
+	observedCore, observedLogs := observer.New(zapcore.DebugLevel)
+	logger := zap.New(NewCore(duck, observedCore, WithMinLevel(zapcore.InfoLevel))).With(
+		zap.String("service", "api"),
+	)
+	logger.Info("hello", zap.Int("count", 2))
 
+	if observedLogs.Len() != 1 {
+		t.Fatalf("expected downstream zap core to receive one log, got %d", observedLogs.Len())
+	}
 	if len(provider.events) != 1 {
 		t.Fatalf("expected one captured event, got %d", len(provider.events))
 	}
@@ -56,14 +64,14 @@ func TestHandlerCapturesSlogRecord(t *testing.T) {
 	}
 	contextMap := asMap(t, payload["context"])
 	if contextMap["service"] != "api" {
-		t.Fatalf("expected inherited slog attr, got %#v", contextMap["service"])
+		t.Fatalf("expected inherited zap field, got %#v", contextMap["service"])
 	}
 	if contextMap["count"] != float64(2) {
 		t.Fatalf("expected count=2, got %#v", contextMap["count"])
 	}
 }
 
-func TestHandlerSkipsBelowMinLevelByDefault(t *testing.T) {
+func TestCoreSkipsBelowMinLevelByDefault(t *testing.T) {
 	t.Parallel()
 
 	provider := &captureProvider{}
@@ -71,9 +79,13 @@ func TestHandlerSkipsBelowMinLevelByDefault(t *testing.T) {
 		Providers: []duckbug.Provider{provider},
 	})
 
-	logger := slog.New(NewHandler(duck, nil))
+	observedCore, observedLogs := observer.New(zapcore.DebugLevel)
+	logger := zap.New(NewCore(duck, observedCore))
 	logger.Info("hello")
 
+	if observedLogs.Len() != 1 {
+		t.Fatalf("expected downstream zap core to receive one log, got %d", observedLogs.Len())
+	}
 	if len(provider.events) != 0 {
 		t.Fatalf("expected no captured events below default min level, got %d", len(provider.events))
 	}

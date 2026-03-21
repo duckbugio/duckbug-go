@@ -2,6 +2,7 @@ package duckbugprovider
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -16,9 +17,13 @@ type fakeTransport struct {
 	lastBatch      []map[string]any
 	sendResult     core.TransportResult
 	batchResult    core.TransportResult
+	sendBlock      chan struct{}
 }
 
 func (t *fakeTransport) Send(_ context.Context, _ string, _ core.EventType, data map[string]any) core.TransportResult {
+	if t.sendBlock != nil {
+		<-t.sendBlock
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.sendCalls++
@@ -27,6 +32,9 @@ func (t *fakeTransport) Send(_ context.Context, _ string, _ core.EventType, data
 }
 
 func (t *fakeTransport) SendBatch(_ context.Context, _ string, _ core.EventType, items []map[string]any) core.TransportResult {
+	if t.sendBlock != nil {
+		<-t.sendBlock
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.sendBatchCalls++
@@ -41,6 +49,7 @@ func TestProviderFlushesBatchOnBatchSize(t *testing.T) {
 	provider := New(
 		"https://duckbug.local/api/ingest/project:key",
 		WithTransport(transport),
+		WithAsync(false),
 		WithBatchSize(2),
 	)
 
@@ -75,6 +84,7 @@ func TestProviderSendsTransactionImmediatelyEvenWhenBatchEnabled(t *testing.T) {
 	provider := New(
 		"https://duckbug.local/api/ingest/project:key",
 		WithTransport(transport),
+		WithAsync(false),
 		WithBatchSize(10),
 	)
 
@@ -104,6 +114,7 @@ func TestProviderAppliesPrivacyAndBeforeSend(t *testing.T) {
 	provider := New(
 		"https://duckbug.local/api/ingest/project:key",
 		WithTransport(transport),
+		WithAsync(false),
 		WithPrivacy(PrivacyOptions{
 			CaptureRequestContext: true,
 			CaptureHeaders:        false,
@@ -166,6 +177,7 @@ func TestProviderDuplicateConflictDoesNotCallFailureHandler(t *testing.T) {
 	provider := New(
 		"https://duckbug.local/api/ingest/project:key",
 		WithTransport(transport),
+		WithAsync(false),
 		WithTransportFailureHandler(func(info core.FailureInfo) {
 			failures++
 		}),
@@ -199,6 +211,7 @@ func TestProviderCallsFailureHandlerOnTransportError(t *testing.T) {
 	provider := New(
 		"https://duckbug.local/api/ingest/project:key",
 		WithTransport(transport),
+		WithAsync(false),
 		WithTransportFailureHandler(func(info core.FailureInfo) {
 			captured = info
 		}),
@@ -221,5 +234,54 @@ func TestProviderCallsFailureHandlerOnTransportError(t *testing.T) {
 	}
 	if captured.Message == "" {
 		t.Fatal("expected non-empty failure message")
+	}
+}
+
+func TestProviderDropsWhenQueueIsFull(t *testing.T) {
+	t.Parallel()
+
+	sendBlock := make(chan struct{})
+	transport := &fakeTransport{
+		sendResult: core.TransportResult{StatusCode: 201},
+		sendBlock:  sendBlock,
+	}
+	failures := 0
+	provider := New(
+		"https://duckbug.local/api/ingest/project:key",
+		WithTransport(transport),
+		WithQueueSize(1),
+		WithTransportFailureHandler(func(info core.FailureInfo) {
+			failures++
+		}),
+	)
+
+	for i := 0; i < 1000; i++ {
+		provider.CaptureEvent(context.Background(), core.NewEvent(core.EventTypeLog, map[string]any{
+			"eventId": fmt.Sprintf("%d", i),
+			"time":    i + 1,
+			"level":   "INFO",
+			"message": "queued",
+		}))
+	}
+	close(sendBlock)
+	provider.Flush(context.Background())
+
+	if failures == 0 {
+		t.Fatal("expected at least one queue-full failure")
+	}
+}
+
+func TestProviderConfigEnablesAsyncByDefault(t *testing.T) {
+	t.Parallel()
+
+	provider := NewWithConfig(Config{
+		DSN: "https://duckbug.local/api/ingest/project:key",
+	})
+
+	if !provider.async {
+		t.Fatal("expected async delivery to be enabled by default")
+	}
+	if provider.queue == nil {
+		t.Fatal("expected async provider queue to be initialized")
 	}
 }

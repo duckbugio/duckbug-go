@@ -25,7 +25,7 @@ go get github.com/duckbugio/duckbug-go
 To install a tagged release:
 
 ```bash
-go get github.com/duckbugio/duckbug-go@v0.1.0
+go get github.com/duckbugio/duckbug-go@v0.1.1
 ```
 
 ## Quick start
@@ -34,7 +34,13 @@ go get github.com/duckbugio/duckbug-go@v0.1.0
 package main
 
 import (
+    "context"
+    "log/slog"
+    "net/http"
+
     duckbug "github.com/duckbugio/duckbug-go"
+    duckbughttp "github.com/duckbugio/duckbug-go/integrations/nethttp"
+    duckbugslog "github.com/duckbugio/duckbug-go/integrations/slog"
     "github.com/duckbugio/duckbug-go/pond"
 )
 
@@ -65,7 +71,20 @@ func main() {
         duck.Quack(err)
     }
 
-    duck.Flush(nil)
+    logger := slog.New(duckbugslog.NewHandler(duck, slog.Default().Handler()))
+    logger.Warn("checkout degraded", "provider", "stripe")
+
+    handler := duckbughttp.Middleware(
+        duck,
+        duckbughttp.WithCaptureTransactions(true),
+        duckbughttp.WithTransactionSampleRate(0.10),
+    )(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        w.WriteHeader(http.StatusNoContent)
+    }))
+
+    _ = handler
+
+    duck.Flush(context.Background())
 }
 ```
 
@@ -82,6 +101,13 @@ func main() {
 - Sensitive header names are masked with `***`.
 - Query/body/session/cookies/files/env are attached in the canonical event model and can be disabled in the DuckBug provider privacy options.
 - `env` capture is disabled by default in the first-party provider.
+- `net/http` middleware does not read request bodies unless you explicitly enable `WithReadBody(true)`.
+
+## Runtime defaults
+
+- The first-party provider uses a background queue by default, so `CaptureLog`, `Quack`, `CaptureTransaction` and `slog` bridge calls do not block the hot path on network I/O.
+- The default transport is tuned for application safety: short connection timeout and no retry storm on the request path.
+- `Flush(...)` waits for the provider queue and sends any buffered log/error batches, so it should be called on graceful shutdown.
 
 ## slog integration
 
@@ -90,10 +116,64 @@ logger := slog.New(duckbugslog.NewHandler(duck, slog.Default().Handler()))
 logger.Info("checkout started", "requestId", "req-123")
 ```
 
+By default the SDK captures `WARN+` from `slog`. To lower the threshold:
+
+```go
+logger := slog.New(
+    duckbugslog.NewHandler(
+        duck,
+        slog.Default().Handler(),
+        duckbugslog.WithMinLevel(slog.LevelInfo),
+    ),
+)
+```
+
+## zap integration
+
+```go
+import (
+    "os"
+
+    duckbugzap "github.com/duckbugio/duckbug-go/integrations/zap"
+    "go.uber.org/zap"
+    "go.uber.org/zap/zapcore"
+)
+
+observerCore := zapcore.NewCore(
+    zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig()),
+    zapcore.AddSync(os.Stdout),
+    zapcore.InfoLevel,
+)
+logger := zap.New(duckbugzap.NewCore(duck, observerCore)).With(zap.String("service", "api"))
+logger.Warn("checkout degraded", zap.String("provider", "stripe"))
+```
+
+## zerolog integration
+
+```go
+import (
+    "os"
+
+    duckbugzerolog "github.com/duckbugio/duckbug-go/integrations/zerolog"
+    "github.com/rs/zerolog"
+)
+
+logger := zerolog.New(duckbugzerolog.NewWriter(duck, os.Stdout)).
+    With().
+    Timestamp().
+    Str("service", "api").
+    Logger()
+logger.Warn().Str("provider", "stripe").Msg("checkout degraded")
+```
+
 ## net/http integration
 
 ```go
-handler := duckbughttp.Middleware(duck)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+handler := duckbughttp.Middleware(
+    duck,
+    duckbughttp.WithCaptureTransactions(true),
+    duckbughttp.WithTransactionSampleRate(0.10),
+)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
     duck.CaptureLogContext(r.Context(), "info", "request received", map[string]any{
         "path": r.URL.Path,
     })
@@ -105,9 +185,10 @@ handler := duckbughttp.Middleware(duck)(http.HandlerFunc(func(w http.ResponseWri
 
 The first-party DuckBug provider supports:
 
-- batching with explicit `Flush(...)`
+- async non-blocking enqueue with bounded in-memory queue
+- batching with explicit `Flush(...)` and periodic background flush
 - single-shot `transactions` ingest
-- bounded retry/backoff for network errors, `429`, and `5xx`
+- safe-by-default transport timeouts and configurable retry/backoff
 - `beforeSend` mutation/drop hook
 - transport failure hook
 - privacy controls for request sections and `env`
@@ -144,13 +225,13 @@ Implemented in this iteration:
 - core runtime for `errors`, `logs`, and `transactions`
 - branded `Duck` / `Quack` / `pond.Ripple`
 - first-party DuckBug provider
-- `slog` bridge
+- `slog`, `zap`, and `zerolog` bridges
 - `net/http` middleware compatible with `chi`
 - schema copies and tests against the current payload contract for `errors` and `logs`
 - transaction payload tests aligned with `duckbug/backend` and `duckbug-php`
 
 ## Release process
 
-- Push a semver-style tag like `v0.1.0`.
+- Push a semver-style tag like `v0.1.1`.
 - The release workflow re-runs module checks and creates a GitHub Release.
 - Consumers install the module through the standard Go module mechanism via `go get`.

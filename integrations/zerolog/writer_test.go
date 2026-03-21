@@ -1,15 +1,16 @@
-package slogduckbug
+package zerologduckbug
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
-	"log/slog"
 	"sync"
 	"testing"
 	"time"
 
 	duckbug "github.com/duckbugio/duckbug-go"
 	"github.com/duckbugio/duckbug-go/pond"
+	"github.com/rs/zerolog"
 )
 
 type captureProvider struct {
@@ -26,7 +27,7 @@ func (p *captureProvider) CaptureEvent(_ context.Context, event duckbug.Event) {
 	p.events = append(p.events, cloned)
 }
 
-func TestHandlerCapturesSlogRecord(t *testing.T) {
+func TestWriterCapturesZerologEvent(t *testing.T) {
 	t.Parallel()
 
 	provider := &captureProvider{}
@@ -40,9 +41,17 @@ func TestHandlerCapturesSlogRecord(t *testing.T) {
 		},
 	})
 
-	logger := slog.New(NewHandler(duck, nil, WithMinLevel(slog.LevelInfo))).With("service", "api")
-	logger.Info("hello", "count", 2)
+	var buf bytes.Buffer
+	logger := zerolog.New(NewWriter(duck, &buf, WithMinLevel(zerolog.InfoLevel))).
+		With().
+		Str("service", "api").
+		Logger()
 
+	logger.Info().Int("count", 2).Msg("hello")
+
+	if buf.Len() == 0 {
+		t.Fatal("expected downstream zerolog writer to receive bytes")
+	}
 	if len(provider.events) != 1 {
 		t.Fatalf("expected one captured event, got %d", len(provider.events))
 	}
@@ -56,14 +65,14 @@ func TestHandlerCapturesSlogRecord(t *testing.T) {
 	}
 	contextMap := asMap(t, payload["context"])
 	if contextMap["service"] != "api" {
-		t.Fatalf("expected inherited slog attr, got %#v", contextMap["service"])
+		t.Fatalf("expected inherited zerolog field, got %#v", contextMap["service"])
 	}
 	if contextMap["count"] != float64(2) {
 		t.Fatalf("expected count=2, got %#v", contextMap["count"])
 	}
 }
 
-func TestHandlerSkipsBelowMinLevelByDefault(t *testing.T) {
+func TestWriterSkipsBelowMinLevelByDefault(t *testing.T) {
 	t.Parallel()
 
 	provider := &captureProvider{}
@@ -71,9 +80,13 @@ func TestHandlerSkipsBelowMinLevelByDefault(t *testing.T) {
 		Providers: []duckbug.Provider{provider},
 	})
 
-	logger := slog.New(NewHandler(duck, nil))
-	logger.Info("hello")
+	var buf bytes.Buffer
+	logger := zerolog.New(NewWriter(duck, &buf))
+	logger.Info().Msg("hello")
 
+	if buf.Len() == 0 {
+		t.Fatal("expected downstream zerolog writer to receive bytes")
+	}
 	if len(provider.events) != 0 {
 		t.Fatalf("expected no captured events below default min level, got %d", len(provider.events))
 	}

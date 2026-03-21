@@ -1,9 +1,12 @@
 package nethttp
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
@@ -14,19 +17,26 @@ import (
 )
 
 type Config struct {
-	CapturePanics bool
-	Repanic       bool
-	ReadBody      bool
-	MaxBodyBytes  int64
+	CapturePanics         bool
+	Repanic               bool
+	ReadBody              bool
+	MaxBodyBytes          int64
+	CaptureTransactions   bool
+	TransactionSampleRate float64
+	IgnoredPaths          []string
+	IgnoredPathPrefixes   []string
+	SkipRequest           func(*http.Request) bool
 }
 
 type Option func(*Config)
 
 func Middleware(duck *duckbug.Duck, options ...Option) func(http.Handler) http.Handler {
 	config := Config{
-		CapturePanics: true,
-		ReadBody:      true,
-		MaxBodyBytes:  64 << 10,
+		CapturePanics:         true,
+		ReadBody:              false,
+		MaxBodyBytes:          64 << 10,
+		CaptureTransactions:   false,
+		TransactionSampleRate: 1,
 	}
 	for _, option := range options {
 		if option != nil {
@@ -40,19 +50,27 @@ func Middleware(duck *duckbug.Duck, options ...Option) func(http.Handler) http.H
 		}
 
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			reqCtx := buildRequestContext(r, config)
-			ctx := pond.WithRequestContext(r.Context(), reqCtx)
-			r = r.WithContext(ctx)
-
-			if duck == nil || !config.CapturePanics {
+			if shouldIgnoreRequest(r, config) {
 				next.ServeHTTP(w, r)
 				return
 			}
 
-			tracker := &responseWriterTracker{ResponseWriter: w}
+			reqCtx := buildRequestContext(r, config)
+			ctx := pond.WithRequestContext(r.Context(), reqCtx)
+			r = r.WithContext(ctx)
+
+			tracker := &responseWriterTracker{
+				ResponseWriter: w,
+				statusCode:     http.StatusOK,
+			}
+			tx := startTransaction(duck, r, config)
 			defer func() {
 				if recovered := recover(); recovered != nil {
-					duck.CaptureRecoveredPanicContext(r.Context(), recovered, "nethttp_middleware")
+					tracker.statusCode = http.StatusInternalServerError
+					if duck != nil && config.CapturePanics {
+						duck.CaptureRecoveredPanicContext(r.Context(), recovered, "nethttp_middleware")
+					}
+					captureTransaction(duck, r, tracker.statusCode, tx, true, config)
 					if config.Repanic {
 						panic(recovered)
 					}
@@ -63,6 +81,7 @@ func Middleware(duck *duckbug.Duck, options ...Option) func(http.Handler) http.H
 			}()
 
 			next.ServeHTTP(tracker, r)
+			captureTransaction(duck, r, tracker.statusCode, tx, false, config)
 		})
 	}
 }
@@ -91,19 +110,192 @@ func WithMaxBodyBytes(limit int64) Option {
 	}
 }
 
+func WithCaptureTransactions(enabled bool) Option {
+	return func(config *Config) {
+		config.CaptureTransactions = enabled
+	}
+}
+
+func WithTransactionSampleRate(rate float64) Option {
+	return func(config *Config) {
+		config.TransactionSampleRate = rate
+	}
+}
+
+func WithIgnoredPaths(paths ...string) Option {
+	return func(config *Config) {
+		config.IgnoredPaths = append(config.IgnoredPaths, paths...)
+	}
+}
+
+func WithIgnoredPathPrefixes(prefixes ...string) Option {
+	return func(config *Config) {
+		config.IgnoredPathPrefixes = append(config.IgnoredPathPrefixes, prefixes...)
+	}
+}
+
+func WithSkipRequest(fn func(*http.Request) bool) Option {
+	return func(config *Config) {
+		config.SkipRequest = fn
+	}
+}
+
 type responseWriterTracker struct {
 	http.ResponseWriter
+	statusCode  int
 	wroteHeader bool
 }
 
 func (w *responseWriterTracker) WriteHeader(statusCode int) {
+	w.statusCode = statusCode
 	w.wroteHeader = true
 	w.ResponseWriter.WriteHeader(statusCode)
 }
 
 func (w *responseWriterTracker) Write(data []byte) (int, error) {
+	if !w.wroteHeader {
+		w.statusCode = http.StatusOK
+	}
 	w.wroteHeader = true
 	return w.ResponseWriter.Write(data)
+}
+
+func (w *responseWriterTracker) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("response writer does not implement http.Hijacker")
+	}
+	return hijacker.Hijack()
+}
+
+func (w *responseWriterTracker) Flush() {
+	flusher, ok := w.ResponseWriter.(http.Flusher)
+	if !ok {
+		return
+	}
+	flusher.Flush()
+}
+
+func (w *responseWriterTracker) Push(target string, opts *http.PushOptions) error {
+	pusher, ok := w.ResponseWriter.(http.Pusher)
+	if !ok {
+		return http.ErrNotSupported
+	}
+	return pusher.Push(target, opts)
+}
+
+func (w *responseWriterTracker) ReadFrom(r io.Reader) (int64, error) {
+	readerFrom, ok := w.ResponseWriter.(io.ReaderFrom)
+	if !ok {
+		return io.Copy(w.ResponseWriter, r)
+	}
+	return readerFrom.ReadFrom(r)
+}
+
+func (w *responseWriterTracker) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+func shouldIgnoreRequest(r *http.Request, config Config) bool {
+	if r == nil {
+		return true
+	}
+	if config.SkipRequest != nil && config.SkipRequest(r) {
+		return true
+	}
+
+	path := strings.TrimSpace(r.URL.Path)
+	for _, item := range config.IgnoredPaths {
+		if path == strings.TrimSpace(item) {
+			return true
+		}
+	}
+	for _, item := range config.IgnoredPathPrefixes {
+		prefix := strings.TrimSpace(item)
+		if prefix != "" && strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func startTransaction(duck *duckbug.Duck, r *http.Request, config Config) *duckbug.Transaction {
+	if duck == nil || !config.CaptureTransactions || isWebsocketRequest(r) {
+		return nil
+	}
+
+	path := "/"
+	if r != nil && r.URL != nil && strings.TrimSpace(r.URL.Path) != "" {
+		path = strings.TrimSpace(r.URL.Path)
+	}
+	method := http.MethodGet
+	if r != nil && strings.TrimSpace(r.Method) != "" {
+		method = strings.TrimSpace(r.Method)
+	}
+	userAgent := ""
+	if r != nil {
+		userAgent = strings.TrimSpace(r.Header.Get("User-Agent"))
+	}
+
+	tx := duck.StartTransaction(method+" "+path, "http.server")
+	tx.SetContext(map[string]any{
+		"method":    method,
+		"path":      path,
+		"userAgent": userAgent,
+	})
+	return tx
+}
+
+func captureTransaction(
+	duck *duckbug.Duck,
+	r *http.Request,
+	statusCode int,
+	tx *duckbug.Transaction,
+	force bool,
+	config Config,
+) {
+	if duck == nil || tx == nil {
+		return
+	}
+	if !force && !shouldCaptureTransaction(config.TransactionSampleRate, statusCode) {
+		return
+	}
+
+	tx.AddMeasurement("http.response.status_code", statusCode, "code")
+	tx.Finish(transactionStatusFromHTTPStatus(statusCode))
+	duck.CaptureTransactionContext(r.Context(), tx)
+}
+
+func shouldCaptureTransaction(sampleRate float64, statusCode int) bool {
+	if statusCode >= http.StatusInternalServerError {
+		return true
+	}
+	switch {
+	case sampleRate <= 0:
+		return false
+	case sampleRate >= 1:
+		return true
+	default:
+		return rand.Float64() < sampleRate
+	}
+}
+
+func transactionStatusFromHTTPStatus(statusCode int) string {
+	switch {
+	case statusCode >= http.StatusInternalServerError:
+		return "internal_error"
+	case statusCode >= http.StatusBadRequest:
+		return "invalid_argument"
+	default:
+		return "ok"
+	}
+}
+
+func isWebsocketRequest(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(r.Header.Get("Upgrade")), "websocket")
 }
 
 func buildRequestContext(r *http.Request, config Config) pond.RequestContext {

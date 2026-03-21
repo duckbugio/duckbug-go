@@ -3,9 +3,10 @@ package duckbugprovider
 import (
 	"context"
 	"fmt"
-	"log/slog"
+	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/duckbugio/duckbug-go/core"
@@ -44,6 +45,9 @@ type Config struct {
 	DSN                     string
 	Transport               Transport
 	BatchSize               int
+	DisableAsync            bool
+	QueueSize               int
+	FlushInterval           time.Duration
 	Privacy                 PrivacyOptions
 	BeforeSend              BeforeSendFunc
 	TransportFailureHandler func(core.FailureInfo)
@@ -59,22 +63,36 @@ type Provider struct {
 	dsn                     string
 	transport               Transport
 	batchSize               int
+	async                   bool
+	queueSize               int
+	flushInterval           time.Duration
 	privacy                 PrivacyOptions
 	beforeSend              BeforeSendFunc
 	transportFailureHandler func(core.FailureInfo)
 
 	mu      sync.Mutex
 	buffers map[core.EventType][]map[string]any
+	queue   chan queuedEvent
+	pending sync.WaitGroup
+	dropped atomic.Uint64
+}
+
+type queuedEvent struct {
+	ctx       context.Context
+	eventType core.EventType
+	payload   map[string]any
 }
 
 func New(dsn string, options ...Option) *Provider {
 	config := Config{
 		DSN:               dsn,
 		BatchSize:         1,
+		QueueSize:         1024,
+		FlushInterval:     2 * time.Second,
 		Privacy:           DefaultPrivacyOptions(),
-		Timeout:           5 * time.Second,
-		ConnectionTimeout: 3 * time.Second,
-		MaxRetries:        2,
+		Timeout:           2 * time.Second,
+		ConnectionTimeout: 300 * time.Millisecond,
+		MaxRetries:        0,
 		RetryDelay:        100 * time.Millisecond,
 	}
 
@@ -92,6 +110,14 @@ func NewWithConfig(config Config) *Provider {
 	if batchSize < 1 {
 		batchSize = 1
 	}
+	queueSize := config.QueueSize
+	if queueSize < 1 {
+		queueSize = 1024
+	}
+	flushInterval := config.FlushInterval
+	if flushInterval <= 0 {
+		flushInterval = 2 * time.Second
+	}
 
 	transport := config.Transport
 	if transport == nil {
@@ -103,10 +129,13 @@ func NewWithConfig(config Config) *Provider {
 		})
 	}
 
-	return &Provider{
+	provider := &Provider{
 		dsn:                     strings.TrimRight(strings.TrimSpace(config.DSN), "/"),
 		transport:               transport,
 		batchSize:               batchSize,
+		async:                   !config.DisableAsync,
+		queueSize:               queueSize,
+		flushInterval:           flushInterval,
 		privacy:                 config.Privacy,
 		beforeSend:              config.BeforeSend,
 		transportFailureHandler: config.TransportFailureHandler,
@@ -116,11 +145,34 @@ func NewWithConfig(config Config) *Provider {
 			core.EventTypeTransaction: {},
 		},
 	}
+	if provider.async {
+		provider.queue = make(chan queuedEvent, provider.queueSize)
+		go provider.run()
+	}
+	return provider
 }
 
 func WithBatchSize(size int) Option {
 	return func(config *Config) {
 		config.BatchSize = size
+	}
+}
+
+func WithAsync(enabled bool) Option {
+	return func(config *Config) {
+		config.DisableAsync = !enabled
+	}
+}
+
+func WithQueueSize(size int) Option {
+	return func(config *Config) {
+		config.QueueSize = size
+	}
+}
+
+func WithFlushInterval(interval time.Duration) Option {
+	return func(config *Config) {
+		config.FlushInterval = interval
 	}
 }
 
@@ -185,34 +237,95 @@ func (p *Provider) CaptureEvent(ctx context.Context, event core.Event) {
 		return
 	}
 
-	if p.batchSize <= 1 {
-		result := p.transport.Send(ctx, p.dsn, event.Type, payload)
-		p.handleTransportResult(event.Type, []map[string]any{payload}, result)
+	if p.async {
+		p.enqueue(ctx, event.Type, payload)
 		return
 	}
 
-	if event.Type == core.EventTypeTransaction {
-		result := p.transport.Send(ctx, p.dsn, event.Type, payload)
-		p.handleTransportResult(event.Type, []map[string]any{payload}, result)
-		return
-	}
-
-	p.mu.Lock()
-	p.buffers[event.Type] = append(p.buffers[event.Type], payload)
-	shouldFlush := len(p.buffers[event.Type]) >= p.batchSize
-	p.mu.Unlock()
-
-	if shouldFlush {
-		p.flushType(ctx, event.Type)
-	}
+	p.capturePrepared(ctx, event.Type, payload)
 }
 
 func (p *Provider) Flush(ctx context.Context) {
 	if p == nil {
 		return
 	}
+	if p.async {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if !p.wait(ctx) {
+			return
+		}
+	}
 	p.flushType(ctx, core.EventTypeError)
 	p.flushType(ctx, core.EventTypeLog)
+}
+
+func (p *Provider) run() {
+	ticker := time.NewTicker(p.flushInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case item := <-p.queue:
+			p.capturePrepared(item.ctx, item.eventType, item.payload)
+			p.pending.Done()
+		case <-ticker.C:
+			p.flushType(context.Background(), core.EventTypeError)
+			p.flushType(context.Background(), core.EventTypeLog)
+		}
+	}
+}
+
+func (p *Provider) enqueue(ctx context.Context, eventType core.EventType, payload map[string]any) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	item := queuedEvent{
+		ctx:       context.WithoutCancel(ctx),
+		eventType: eventType,
+		payload:   payload,
+	}
+
+	p.pending.Add(1)
+	select {
+	case p.queue <- item:
+	default:
+		p.pending.Done()
+		p.handleDroppedEvent(eventType, payload)
+	}
+}
+
+func (p *Provider) wait(ctx context.Context) bool {
+	done := make(chan struct{})
+	go func() {
+		p.pending.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (p *Provider) capturePrepared(ctx context.Context, eventType core.EventType, payload map[string]any) {
+	if p.batchSize <= 1 || eventType == core.EventTypeTransaction {
+		result := p.transport.Send(ctx, p.dsn, eventType, payload)
+		p.handleTransportResult(eventType, []map[string]any{payload}, result)
+		return
+	}
+
+	p.mu.Lock()
+	p.buffers[eventType] = append(p.buffers[eventType], payload)
+	shouldFlush := len(p.buffers[eventType]) >= p.batchSize
+	p.mu.Unlock()
+
+	if shouldFlush {
+		p.flushType(ctx, eventType)
+	}
 }
 
 func (p *Provider) preparePayload(eventType core.EventType, payload map[string]any) (map[string]any, bool) {
@@ -288,7 +401,30 @@ func (p *Provider) handleTransportResult(eventType core.EventType, items []map[s
 		return
 	}
 
-	slog.Default().Error(message)
+	log.Printf("%s", message)
+}
+
+func (p *Provider) handleDroppedEvent(eventType core.EventType, payload map[string]any) {
+	dropped := p.dropped.Add(1)
+	result := core.TransportResult{
+		ErrorMessage: "provider queue is full",
+	}
+	message := fmt.Sprintf(
+		"[DuckBug] dropped %s event because provider queue is full (dropped=%d)",
+		eventType,
+		dropped,
+	)
+	info := core.FailureInfo{
+		Type:    eventType,
+		Items:   []map[string]any{payload},
+		Result:  result,
+		Message: message,
+	}
+	if p.transportFailureHandler != nil {
+		p.transportFailureHandler(info)
+		return
+	}
+	log.Printf("%s", message)
 }
 
 func applyPrivacy(payload map[string]any, options PrivacyOptions) {

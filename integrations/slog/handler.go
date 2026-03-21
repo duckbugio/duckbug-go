@@ -13,24 +13,41 @@ type Handler struct {
 	next   slog.Handler
 	attrs  []slog.Attr
 	groups []string
+	minLvl slog.Level
 }
 
-func NewHandler(duck *duckbug.Duck, next slog.Handler) *Handler {
-	return &Handler{
-		duck: duck,
-		next: next,
+type Option func(*Handler)
+
+func NewHandler(duck *duckbug.Duck, next slog.Handler, options ...Option) *Handler {
+	handler := &Handler{
+		duck:   duck,
+		next:   next,
+		minLvl: slog.LevelWarn,
+	}
+	for _, option := range options {
+		if option != nil {
+			option(handler)
+		}
+	}
+	return handler
+}
+
+func WithMinLevel(level slog.Level) Option {
+	return func(handler *Handler) {
+		handler.minLvl = level
 	}
 }
 
 func (h *Handler) Enabled(ctx context.Context, level slog.Level) bool {
+	sdkEnabled := h.duck != nil && level >= h.minLvl
 	if h.next != nil {
-		return h.next.Enabled(ctx, level)
+		return h.next.Enabled(ctx, level) || sdkEnabled
 	}
-	return true
+	return sdkEnabled
 }
 
 func (h *Handler) Handle(ctx context.Context, record slog.Record) error {
-	if h.duck != nil {
+	if h.duck != nil && record.Level >= h.minLvl {
 		payload := make(map[string]any)
 		for _, attr := range h.attrs {
 			addAttr(payload, h.groups, attr)
@@ -77,8 +94,9 @@ func (h *Handler) clone() *Handler {
 	}
 
 	cloned := &Handler{
-		duck: h.duck,
-		next: h.next,
+		duck:   h.duck,
+		next:   h.next,
+		minLvl: h.minLvl,
 	}
 	if len(h.attrs) > 0 {
 		cloned.attrs = append([]slog.Attr(nil), h.attrs...)

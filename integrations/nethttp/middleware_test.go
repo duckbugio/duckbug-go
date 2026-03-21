@@ -38,7 +38,7 @@ func TestMiddlewareAttachesRequestContext(t *testing.T) {
 		}),
 	})
 
-	handler := Middleware(duck)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := Middleware(duck, WithReadBody(true))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		duck.CaptureLogContext(r.Context(), "info", "request received", map[string]any{
 			"password": "123456",
 		})
@@ -79,6 +79,66 @@ func TestMiddlewareAttachesRequestContext(t *testing.T) {
 	contextMap := asMap(t, payload["context"])
 	if contextMap["password"] != "***" {
 		t.Fatalf("expected custom context password to be masked, got %#v", contextMap["password"])
+	}
+}
+
+func TestMiddlewareCapturesTransactionWhenEnabled(t *testing.T) {
+	t.Parallel()
+
+	provider := &captureProvider{}
+	duck := duckbug.NewDuck(duckbug.Config{
+		Providers: []duckbug.Provider{provider},
+	})
+
+	handler := Middleware(
+		duck,
+		WithCaptureTransactions(true),
+		WithTransactionSampleRate(1),
+	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "https://example.com/checkout", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if len(provider.events) != 1 {
+		t.Fatalf("expected one captured event, got %d", len(provider.events))
+	}
+	if provider.events[0].Type != duckbug.EventTypeTransaction {
+		t.Fatalf("expected transaction event, got %s", provider.events[0].Type)
+	}
+	if provider.events[0].Payload["transaction"] != "POST /checkout" {
+		t.Fatalf("unexpected transaction name: %#v", provider.events[0].Payload["transaction"])
+	}
+}
+
+func TestMiddlewareSkipsIgnoredPaths(t *testing.T) {
+	t.Parallel()
+
+	provider := &captureProvider{}
+	duck := duckbug.NewDuck(duckbug.Config{
+		Providers: []duckbug.Provider{provider},
+	})
+
+	handler := Middleware(
+		duck,
+		WithCaptureTransactions(true),
+		WithTransactionSampleRate(1),
+		WithIgnoredPaths("/health"),
+		WithIgnoredPathPrefixes("/ingest/"),
+	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	for _, path := range []string{"/health", "/ingest/project:key/errors"} {
+		req := httptest.NewRequest(http.MethodGet, "https://example.com"+path, nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+	}
+
+	if len(provider.events) != 0 {
+		t.Fatalf("expected ignored paths to produce no events, got %d", len(provider.events))
 	}
 }
 
