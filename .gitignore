@@ -1,0 +1,14 @@
+.DS_Store
+
+# Go build outputs
+bin/
+dist/
+coverage.out
+cover.out
+*.coverprofile
+*.out
+*.test
+
+# IDE/editor
+.idea/
+.vscode/
