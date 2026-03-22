@@ -142,6 +142,32 @@ func TestMiddlewareSkipsIgnoredPaths(t *testing.T) {
 	}
 }
 
+func TestMiddlewareSkipsInternalSDKRequests(t *testing.T) {
+	t.Parallel()
+
+	provider := &captureProvider{}
+	duck := duckbug.NewDuck(duckbug.Config{
+		Providers: []duckbug.Provider{provider},
+	})
+
+	handler := Middleware(
+		duck,
+		WithCaptureTransactions(true),
+		WithCaptureHandled5xx(true),
+	)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "https://example.com/ingest/project:key/logs", nil)
+	req.Header.Set("X-DuckBug-Internal", "1")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if len(provider.events) != 0 {
+		t.Fatalf("expected internal SDK request to be ignored, got %d events", len(provider.events))
+	}
+}
+
 func TestMiddlewareCapturesHandled5xxWhenEnabled(t *testing.T) {
 	t.Parallel()
 

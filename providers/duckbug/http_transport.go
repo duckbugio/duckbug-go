@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/duckbugio/duckbug-go/core"
+	"github.com/duckbugio/duckbug-go/internal/sdkrequest"
 )
 
 type HTTPTransportConfig struct {
@@ -117,6 +118,7 @@ func (t *HTTPTransport) execute(ctx context.Context, url string, body []byte, at
 		}
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(sdkrequest.HeaderName, sdkrequest.HeaderValue)
 
 	resp, err := t.client.Do(req)
 	if err != nil {
