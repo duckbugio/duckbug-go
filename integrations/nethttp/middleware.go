@@ -33,6 +33,8 @@ type Config struct {
 
 type Option func(*Config)
 
+const defaultProductionTransactionSampleRate = 0.10
+
 func Middleware(duck *duckbug.Duck, options ...Option) func(http.Handler) http.Handler {
 	config := Config{
 		CapturePanics:          true,
@@ -96,6 +98,18 @@ func Middleware(duck *duckbug.Duck, options ...Option) func(http.Handler) http.H
 func WithCapturePanics(enabled bool) Option {
 	return func(config *Config) {
 		config.CapturePanics = enabled
+	}
+}
+
+// WithProductionDefaults enables the most common HTTP server production setup:
+// panic capture, handled 5xx capture, and transaction capture with conservative sampling.
+func WithProductionDefaults() Option {
+	return func(config *Config) {
+		config.CapturePanics = true
+		config.CaptureHandled5xx = true
+		config.CaptureTransactions = true
+		config.Handled5xxMaxBodyBytes = 4 << 10
+		config.TransactionSampleRate = defaultProductionTransactionSampleRate
 	}
 }
 

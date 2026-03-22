@@ -3,6 +3,7 @@ package duckbug
 import (
 	corepkg "github.com/duckbugio/duckbug-go/core"
 	duckbugprovider "github.com/duckbugio/duckbug-go/providers/duckbug"
+	"time"
 )
 
 type Duck = corepkg.Duck
@@ -53,6 +54,54 @@ func NewDuckBugProvider(dsn string, options ...DuckBugProviderOption) *DuckBugPr
 
 func NewDuckBugProviderWithConfig(config DuckBugProviderConfig) *DuckBugProvider {
 	return duckbugprovider.NewWithConfig(config)
+}
+
+func WithBatchSize(size int) DuckBugProviderOption {
+	return duckbugprovider.WithBatchSize(size)
+}
+
+func WithAsync(enabled bool) DuckBugProviderOption {
+	return duckbugprovider.WithAsync(enabled)
+}
+
+func WithQueueSize(size int) DuckBugProviderOption {
+	return duckbugprovider.WithQueueSize(size)
+}
+
+func WithFlushInterval(interval time.Duration) DuckBugProviderOption {
+	return duckbugprovider.WithFlushInterval(interval)
+}
+
+func WithPrivacy(options DuckBugPrivacyOptions) DuckBugProviderOption {
+	return duckbugprovider.WithPrivacy(options)
+}
+
+func WithBeforeSend(fn DuckBugBeforeSendFunc) DuckBugProviderOption {
+	return duckbugprovider.WithBeforeSend(fn)
+}
+
+func WithTransportFailureHandler(fn func(FailureInfo)) DuckBugProviderOption {
+	return duckbugprovider.WithTransportFailureHandler(fn)
+}
+
+func WithTransport(transport DuckBugTransport) DuckBugProviderOption {
+	return duckbugprovider.WithTransport(transport)
+}
+
+func WithTimeout(timeout time.Duration) DuckBugProviderOption {
+	return duckbugprovider.WithTimeout(timeout)
+}
+
+func WithConnectionTimeout(timeout time.Duration) DuckBugProviderOption {
+	return duckbugprovider.WithConnectionTimeout(timeout)
+}
+
+func WithMaxRetries(maxRetries int) DuckBugProviderOption {
+	return duckbugprovider.WithMaxRetries(maxRetries)
+}
+
+func WithRetryDelay(delay time.Duration) DuckBugProviderOption {
+	return duckbugprovider.WithRetryDelay(delay)
 }
 
 func DefaultDuckBugPrivacyOptions() DuckBugPrivacyOptions {

@@ -191,6 +191,43 @@ func TestMiddlewareCapturesHandled5xxWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestMiddlewareProductionDefaultsCaptureErrorAndTransactionOn5xx(t *testing.T) {
+	t.Parallel()
+
+	provider := &captureProvider{}
+	duck := duckbug.NewDuck(duckbug.Config{
+		Providers: []duckbug.Provider{provider},
+	})
+
+	handler := Middleware(
+		duck,
+		WithProductionDefaults(),
+	)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"message":"boom"}`))
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/orders", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 response, got %d", rec.Code)
+	}
+
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	if len(provider.events) != 2 {
+		t.Fatalf("expected two captured events, got %d", len(provider.events))
+	}
+	if provider.events[0].Type != duckbug.EventTypeError {
+		t.Fatalf("expected first event to be error, got %s", provider.events[0].Type)
+	}
+	if provider.events[1].Type != duckbug.EventTypeTransaction {
+		t.Fatalf("expected second event to be transaction, got %s", provider.events[1].Type)
+	}
+}
+
 func asMap(t *testing.T, value any) map[string]any {
 	t.Helper()
 	mapped, ok := value.(map[string]any)

@@ -25,7 +25,7 @@ go get github.com/duckbugio/duckbug-go
 To install a tagged release:
 
 ```bash
-go get github.com/duckbugio/duckbug-go@v0.2.0
+go get github.com/duckbugio/duckbug-go@v0.2.1
 ```
 
 ## Quick start
@@ -48,11 +48,11 @@ func main() {
         log.Fatal("DUCKBUG_DSN is required")
     }
 
-    duck := duckbug.NewDuck(duckbug.Config{
-        Providers: []duckbug.Provider{
-            duckbug.NewDuckBugProvider(dsn),
-        },
-    })
+    duck := duckbug.New(
+        dsn,
+        duckbug.WithService("checkout"),
+        duckbug.WithEnvironment("production"),
+    )
     defer duck.Flush(context.Background())
 
     duck.Log("warning", "payment provider timeout", map[string]any{
@@ -67,7 +67,7 @@ func main() {
 
 This is the smallest useful setup: the SDK only needs a DSN. Environment variable naming is up to your application; `DUCKBUG_DSN` is just the simplest convention for examples.
 
-If you want richer context, you can optionally call `SetService(...)`, `SetEnvironment(...)`, `SetRelease(...)`, and `SetServerName(...)` in your app or wrapper.
+If you want richer context, you can optionally pass `duckbug.WithService(...)`, `duckbug.WithEnvironment(...)`, `duckbug.WithRelease(...)`, `duckbug.WithServerName(...)`, custom provider options, or a custom `pond.Pond`.
 
 ### HTTP + logging example
 
@@ -82,27 +82,23 @@ import (
     duckbug "github.com/duckbugio/duckbug-go"
     duckbughttp "github.com/duckbugio/duckbug-go/integrations/nethttp"
     duckbugslog "github.com/duckbugio/duckbug-go/integrations/slog"
-    "github.com/duckbugio/duckbug-go/pond"
 )
 
 func main() {
-    duck := duckbug.NewDuck(duckbug.Config{
-        Pond: pond.Ripple([]string{"password", "token"}),
-        Providers: []duckbug.Provider{
-            duckbug.NewDuckBugProvider("https://duckbug.io/api/ingest/<projectID>:<publicKey>"),
-        },
-    })
-
-    duck.SetEnvironment("production")
-    duck.SetRelease("checkout@1.2.3")
+    duck := duckbug.New(
+        "https://duckbug.io/api/ingest/<projectID>:<publicKey>",
+        duckbug.WithSensitiveFields("password", "token"),
+        duckbug.WithEnvironment("production"),
+        duckbug.WithRelease("checkout@1.2.3"),
+        duckbug.WithService("checkout"),
+    )
 
     logger := slog.New(duckbugslog.NewHandler(duck, slog.Default().Handler()))
     logger.Warn("checkout degraded", "provider", "stripe")
 
     handler := duckbughttp.Middleware(
         duck,
-        duckbughttp.WithCaptureTransactions(true),
-        duckbughttp.WithTransactionSampleRate(0.10),
+        duckbughttp.WithProductionDefaults(),
     )(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
         w.WriteHeader(http.StatusNoContent)
     }))
@@ -116,6 +112,7 @@ func main() {
 ## Branded surface
 
 - `Duck` is the main runtime facade.
+- `New(dsn, ...)` is the shortest setup path for the first-party provider.
 - `Quack(err)` is the branded manual error capture API.
 - `pond.Ripple(...)` builds the context/sanitization subsystem.
 - `Log(...)` is the canonical log capture API.

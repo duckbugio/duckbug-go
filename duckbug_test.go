@@ -40,6 +40,32 @@ func (p *captureProvider) LastEvent(t *testing.T) duckbug.Event {
 	return p.events[len(p.events)-1]
 }
 
+type captureTransport struct {
+	mu       sync.Mutex
+	dsn      string
+	lastType duckbug.EventType
+	lastData map[string]any
+}
+
+func (t *captureTransport) Send(_ context.Context, dsn string, eventType duckbug.EventType, data map[string]any) duckbug.TransportResult {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	t.dsn = dsn
+	t.lastType = eventType
+	raw, _ := json.Marshal(data)
+	_ = json.Unmarshal(raw, &t.lastData)
+
+	return duckbug.TransportResult{StatusCode: 201, Attempts: 1}
+}
+
+func (t *captureTransport) SendBatch(_ context.Context, dsn string, eventType duckbug.EventType, items []map[string]any) duckbug.TransportResult {
+	if len(items) == 0 {
+		return duckbug.TransportResult{StatusCode: 201, Attempts: 1}
+	}
+	return t.Send(context.Background(), dsn, eventType, items[0])
+}
+
 func TestDuckBuildsLogPayloadMatchingSchema(t *testing.T) {
 	t.Parallel()
 
@@ -262,6 +288,54 @@ func TestDuckBuildsTransactionPayload(t *testing.T) {
 	data := asMap(t, childSpan["data"])
 	if data["password"] != "***" {
 		t.Fatalf("expected sensitive child span data to be masked, got %#v", data["password"])
+	}
+}
+
+func TestNewProvidesShortDefaultSetup(t *testing.T) {
+	t.Parallel()
+
+	transport := &captureTransport{}
+	duck := duckbug.New(
+		" https://duckbug.io/api/ingest/project:key ",
+		duckbug.WithEnvironment("production"),
+		duckbug.WithRelease("checkout@1.2.3"),
+		duckbug.WithService("checkout"),
+		duckbug.WithServerName("checkout-1"),
+		duckbug.WithSensitiveFields("customerSecret"),
+		duckbug.WithProviderOptions(
+			duckbug.WithTransport(transport),
+			duckbug.WithAsync(false),
+		),
+	)
+
+	duck.Log("warn", "checkout degraded", map[string]any{
+		"customerSecret": "top-secret",
+	})
+
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+
+	if transport.dsn != "https://duckbug.io/api/ingest/project:key" {
+		t.Fatalf("unexpected dsn: %#v", transport.dsn)
+	}
+	if transport.lastType != duckbug.EventTypeLog {
+		t.Fatalf("expected log event, got %s", transport.lastType)
+	}
+	if got := transport.lastData["service"]; got != "checkout" {
+		t.Fatalf("unexpected service: %#v", got)
+	}
+	if got := transport.lastData["environment"]; got != "production" {
+		t.Fatalf("unexpected environment: %#v", got)
+	}
+	if got := transport.lastData["release"]; got != "checkout@1.2.3" {
+		t.Fatalf("unexpected release: %#v", got)
+	}
+	if got := transport.lastData["serverName"]; got != "checkout-1" {
+		t.Fatalf("unexpected serverName: %#v", got)
+	}
+	contextMap := asMap(t, transport.lastData["context"])
+	if got := contextMap["customerSecret"]; got != "***" {
+		t.Fatalf("expected masked customerSecret, got %#v", got)
 	}
 }
 
