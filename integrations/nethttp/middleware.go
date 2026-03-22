@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math/rand"
 	"net"
@@ -17,26 +18,29 @@ import (
 )
 
 type Config struct {
-	CapturePanics         bool
-	Repanic               bool
-	ReadBody              bool
-	MaxBodyBytes          int64
-	CaptureTransactions   bool
-	TransactionSampleRate float64
-	IgnoredPaths          []string
-	IgnoredPathPrefixes   []string
-	SkipRequest           func(*http.Request) bool
+	CapturePanics          bool
+	CaptureHandled5xx      bool
+	Repanic                bool
+	ReadBody               bool
+	MaxBodyBytes           int64
+	Handled5xxMaxBodyBytes int
+	CaptureTransactions    bool
+	TransactionSampleRate  float64
+	IgnoredPaths           []string
+	IgnoredPathPrefixes    []string
+	SkipRequest            func(*http.Request) bool
 }
 
 type Option func(*Config)
 
 func Middleware(duck *duckbug.Duck, options ...Option) func(http.Handler) http.Handler {
 	config := Config{
-		CapturePanics:         true,
-		ReadBody:              false,
-		MaxBodyBytes:          64 << 10,
-		CaptureTransactions:   false,
-		TransactionSampleRate: 1,
+		CapturePanics:          true,
+		ReadBody:               false,
+		MaxBodyBytes:           64 << 10,
+		Handled5xxMaxBodyBytes: 4 << 10,
+		CaptureTransactions:    false,
+		TransactionSampleRate:  1,
 	}
 	for _, option := range options {
 		if option != nil {
@@ -60,8 +64,10 @@ func Middleware(duck *duckbug.Duck, options ...Option) func(http.Handler) http.H
 			r = r.WithContext(ctx)
 
 			tracker := &responseWriterTracker{
-				ResponseWriter: w,
-				statusCode:     http.StatusOK,
+				ResponseWriter:   w,
+				statusCode:       http.StatusOK,
+				captureResponse:  config.CaptureHandled5xx,
+				maxResponseBytes: config.Handled5xxMaxBodyBytes,
 			}
 			tx := startTransaction(duck, r, config)
 			defer func() {
@@ -81,6 +87,7 @@ func Middleware(duck *duckbug.Duck, options ...Option) func(http.Handler) http.H
 			}()
 
 			next.ServeHTTP(tracker, r)
+			captureHandled5xx(duck, r, tracker, config)
 			captureTransaction(duck, r, tracker.statusCode, tx, false, config)
 		})
 	}
@@ -89,6 +96,12 @@ func Middleware(duck *duckbug.Duck, options ...Option) func(http.Handler) http.H
 func WithCapturePanics(enabled bool) Option {
 	return func(config *Config) {
 		config.CapturePanics = enabled
+	}
+}
+
+func WithCaptureHandled5xx(enabled bool) Option {
+	return func(config *Config) {
+		config.CaptureHandled5xx = enabled
 	}
 }
 
@@ -107,6 +120,12 @@ func WithReadBody(enabled bool) Option {
 func WithMaxBodyBytes(limit int64) Option {
 	return func(config *Config) {
 		config.MaxBodyBytes = limit
+	}
+}
+
+func WithHandled5xxMaxBodyBytes(limit int) Option {
+	return func(config *Config) {
+		config.Handled5xxMaxBodyBytes = limit
 	}
 }
 
@@ -142,8 +161,12 @@ func WithSkipRequest(fn func(*http.Request) bool) Option {
 
 type responseWriterTracker struct {
 	http.ResponseWriter
-	statusCode  int
-	wroteHeader bool
+	statusCode       int
+	wroteHeader      bool
+	captureResponse  bool
+	maxResponseBytes int
+	responseBody     strings.Builder
+	truncated        bool
 }
 
 func (w *responseWriterTracker) WriteHeader(statusCode int) {
@@ -153,11 +176,29 @@ func (w *responseWriterTracker) WriteHeader(statusCode int) {
 }
 
 func (w *responseWriterTracker) Write(data []byte) (int, error) {
+	w.captureBody(data)
 	if !w.wroteHeader {
 		w.statusCode = http.StatusOK
 	}
 	w.wroteHeader = true
 	return w.ResponseWriter.Write(data)
+}
+
+func (w *responseWriterTracker) captureBody(data []byte) {
+	if !w.captureResponse || len(data) == 0 || w.truncated {
+		return
+	}
+	remaining := w.maxResponseBytes - w.responseBody.Len()
+	if remaining <= 0 {
+		w.truncated = true
+		return
+	}
+	if len(data) > remaining {
+		_, _ = w.responseBody.Write(data[:remaining])
+		w.truncated = true
+		return
+	}
+	_, _ = w.responseBody.Write(data)
 }
 
 func (w *responseWriterTracker) Hijack() (net.Conn, *bufio.ReadWriter, error) {
@@ -194,6 +235,17 @@ func (w *responseWriterTracker) ReadFrom(r io.Reader) (int64, error) {
 
 func (w *responseWriterTracker) Unwrap() http.ResponseWriter {
 	return w.ResponseWriter
+}
+
+func (w *responseWriterTracker) responseSnippet() string {
+	body := strings.TrimSpace(w.responseBody.String())
+	if body == "" {
+		return ""
+	}
+	if w.truncated {
+		return body + "...(truncated)"
+	}
+	return body
 }
 
 func shouldIgnoreRequest(r *http.Request, config Config) bool {
@@ -264,6 +316,72 @@ func captureTransaction(
 	tx.AddMeasurement("http.response.status_code", statusCode, "code")
 	tx.Finish(transactionStatusFromHTTPStatus(statusCode))
 	duck.CaptureTransactionContext(r.Context(), tx)
+}
+
+func captureHandled5xx(
+	duck *duckbug.Duck,
+	r *http.Request,
+	tracker *responseWriterTracker,
+	config Config,
+) {
+	if duck == nil || tracker == nil || !config.CaptureHandled5xx || tracker.statusCode < http.StatusInternalServerError {
+		return
+	}
+	method := http.MethodGet
+	path := "/"
+	userAgent := ""
+	if r != nil {
+		if strings.TrimSpace(r.Method) != "" {
+			method = strings.TrimSpace(r.Method)
+		}
+		if r.URL != nil && strings.TrimSpace(r.URL.Path) != "" {
+			path = strings.TrimSpace(r.URL.Path)
+		}
+		userAgent = strings.TrimSpace(r.Header.Get("User-Agent"))
+	}
+	responseBody := tracker.responseSnippet()
+	responseMessage := extractResponseMessage(responseBody)
+	details := map[string]any{
+		"method":    method,
+		"path":      path,
+		"status":    tracker.statusCode,
+		"userAgent": userAgent,
+	}
+	if responseMessage != "" {
+		details["responseMessage"] = responseMessage
+	}
+	if responseBody != "" {
+		details["responseBody"] = responseBody
+	}
+	duck.QuackContextDetails(
+		r.Context(),
+		httpStatusError(tracker.statusCode, responseMessage),
+		details,
+		true,
+		"nethttp_response_5xx",
+	)
+}
+
+func extractResponseMessage(body string) string {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return ""
+	}
+	var payload struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(body), &payload); err == nil && strings.TrimSpace(payload.Message) != "" {
+		return strings.TrimSpace(payload.Message)
+	}
+	return body
+}
+
+func httpStatusError(statusCode int, responseMessage string) error {
+	responseMessage = strings.TrimSpace(responseMessage)
+	if responseMessage == "" {
+		return fmt.Errorf("http %d: %s", statusCode, http.StatusText(statusCode))
+	}
+	return fmt.Errorf("http %d: %s", statusCode, responseMessage)
 }
 
 func shouldCaptureTransaction(sampleRate float64, statusCode int) bool {

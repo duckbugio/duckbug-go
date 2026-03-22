@@ -142,6 +142,55 @@ func TestMiddlewareSkipsIgnoredPaths(t *testing.T) {
 	}
 }
 
+func TestMiddlewareCapturesHandled5xxWhenEnabled(t *testing.T) {
+	t.Parallel()
+
+	provider := &captureProvider{}
+	duck := duckbug.NewDuck(duckbug.Config{
+		Providers: []duckbug.Provider{provider},
+	})
+
+	handler := Middleware(
+		duck,
+		WithCaptureHandled5xx(true),
+	)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"message":"db exploded"}`))
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "https://example.com/checkout", nil)
+	req.Header.Set("User-Agent", "duckbug-test")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 response, got %d", rec.Code)
+	}
+	if len(provider.events) != 1 {
+		t.Fatalf("expected one captured event, got %d", len(provider.events))
+	}
+	event := provider.events[0]
+	if event.Type != duckbug.EventTypeError {
+		t.Fatalf("expected error event, got %s", event.Type)
+	}
+	if got := event.Payload["message"]; got != "http 500: db exploded" {
+		t.Fatalf("unexpected message: %#v", got)
+	}
+	if got := event.Payload["mechanism"]; got != "nethttp_response_5xx" {
+		t.Fatalf("unexpected mechanism: %#v", got)
+	}
+	if got := event.Payload["handled"]; got != true {
+		t.Fatalf("expected handled=true, got %#v", got)
+	}
+	contextMap := asMap(t, event.Payload["context"])
+	if got := contextMap["path"]; got != "/checkout" {
+		t.Fatalf("unexpected path: %#v", got)
+	}
+	if got := contextMap["responseMessage"]; got != "db exploded" {
+		t.Fatalf("unexpected response message: %#v", got)
+	}
+}
+
 func asMap(t *testing.T, value any) map[string]any {
 	t.Helper()
 	mapped, ok := value.(map[string]any)
