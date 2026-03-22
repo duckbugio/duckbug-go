@@ -199,7 +199,7 @@ func TestMiddlewareCapturesHandled5xxWhenEnabled(t *testing.T) {
 	if event.Type != duckbug.EventTypeError {
 		t.Fatalf("expected error event, got %s", event.Type)
 	}
-	if got := event.Payload["message"]; got != "http 500: db exploded" {
+	if got := event.Payload["message"]; got != "http 500: POST /checkout" {
 		t.Fatalf("unexpected message: %#v", got)
 	}
 	if got := event.Payload["mechanism"]; got != "nethttp_response_5xx" {
@@ -214,6 +214,53 @@ func TestMiddlewareCapturesHandled5xxWhenEnabled(t *testing.T) {
 	}
 	if got := contextMap["responseMessage"]; got != "db exploded" {
 		t.Fatalf("unexpected response message: %#v", got)
+	}
+}
+
+func TestMiddlewareHandled5xxMessageDoesNotDependOnResponseBody(t *testing.T) {
+	t.Parallel()
+
+	provider := &captureProvider{}
+	duck := duckbug.NewDuck(duckbug.Config{
+		Providers: []duckbug.Provider{provider},
+	})
+
+	handler := Middleware(
+		duck,
+		WithCaptureHandled5xx(true),
+	)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"message":"` + r.Header.Get("X-Test-Message") + `"}`))
+	}))
+
+	firstReq := httptest.NewRequest(http.MethodPost, "https://example.com/checkout", nil)
+	firstReq.Header.Set("X-Test-Message", "db exploded")
+	firstRec := httptest.NewRecorder()
+	handler.ServeHTTP(firstRec, firstReq)
+
+	secondReq := httptest.NewRequest(http.MethodPost, "https://example.com/checkout", nil)
+	secondReq.Header.Set("X-Test-Message", "queue exploded")
+	secondRec := httptest.NewRecorder()
+	handler.ServeHTTP(secondRec, secondReq)
+
+	if len(provider.events) != 2 {
+		t.Fatalf("expected two captured events, got %d", len(provider.events))
+	}
+
+	firstContext := asMap(t, provider.events[0].Payload["context"])
+	secondContext := asMap(t, provider.events[1].Payload["context"])
+
+	if got := provider.events[0].Payload["message"]; got != "http 500: POST /checkout" {
+		t.Fatalf("unexpected first message: %#v", got)
+	}
+	if got := provider.events[1].Payload["message"]; got != "http 500: POST /checkout" {
+		t.Fatalf("unexpected second message: %#v", got)
+	}
+	if got := firstContext["responseMessage"]; got != "db exploded" {
+		t.Fatalf("unexpected first response message: %#v", got)
+	}
+	if got := secondContext["responseMessage"]; got != "queue exploded" {
+		t.Fatalf("unexpected second response message: %#v", got)
 	}
 }
 
@@ -248,6 +295,9 @@ func TestMiddlewareProductionDefaultsCaptureErrorAndTransactionOn5xx(t *testing.
 	}
 	if provider.events[0].Type != duckbug.EventTypeError {
 		t.Fatalf("expected first event to be error, got %s", provider.events[0].Type)
+	}
+	if got := provider.events[0].Payload["message"]; got != "http 500: GET /orders" {
+		t.Fatalf("unexpected first event message: %#v", got)
 	}
 	if provider.events[1].Type != duckbug.EventTypeTransaction {
 		t.Fatalf("expected second event to be transaction, got %s", provider.events[1].Type)

@@ -378,7 +378,7 @@ func captureHandled5xx(
 	}
 	duck.QuackContextDetails(
 		r.Context(),
-		httpStatusError(tracker.statusCode, responseMessage),
+		httpStatusError(tracker.statusCode, method, path),
 		details,
 		true,
 		"nethttp_response_5xx",
@@ -399,12 +399,16 @@ func extractResponseMessage(body string) string {
 	return body
 }
 
-func httpStatusError(statusCode int, responseMessage string) error {
-	responseMessage = strings.TrimSpace(responseMessage)
-	if responseMessage == "" {
-		return fmt.Errorf("http %d: %s", statusCode, http.StatusText(statusCode))
+func httpStatusError(statusCode int, method, path string) error {
+	method = strings.TrimSpace(method)
+	if method == "" {
+		method = http.MethodGet
 	}
-	return fmt.Errorf("http %d: %s", statusCode, responseMessage)
+	path = strings.TrimSpace(path)
+	if path == "" {
+		path = "/"
+	}
+	return fmt.Errorf("http %d: %s %s", statusCode, method, path)
 }
 
 func shouldCaptureTransaction(sampleRate float64, statusCode int) bool {
