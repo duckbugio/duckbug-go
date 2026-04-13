@@ -60,6 +60,10 @@ func New(dsn string, options ...Option) *Duck {
 
 func WithEnvironment(environment string) Option {
 	return func(cfg *runtimeConfig) {
+		env := strings.TrimSpace(environment)
+		if env == "" {
+			return
+		}
 		cfg.environment = environment
 	}
 }
