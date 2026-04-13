@@ -40,7 +40,7 @@ func TestHandlerCapturesSlogRecord(t *testing.T) {
 		},
 	})
 
-	logger := slog.New(NewHandler(duck, nil, WithMinLevel(slog.LevelInfo))).With("service", "api")
+	logger := slog.New(NewHandler(duck, nil, WithMinLevel("info"))).With("service", "api")
 	logger.Info("hello", "count", 2)
 
 	if len(provider.events) != 1 {
