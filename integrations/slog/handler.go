@@ -3,6 +3,7 @@ package slogduckbug
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/duckbugio/duckbug-go"
@@ -32,9 +33,21 @@ func NewHandler(duck *duckbug.Duck, next slog.Handler, options ...Option) *Handl
 	return handler
 }
 
-func WithMinLevel(level slog.Level) Option {
+func WithMinLevel(level string) Option {
 	return func(handler *Handler) {
-		handler.minLvl = level
+		lvl := strings.TrimSpace(level)
+		if lvl == "" {
+			handler.minLvl = slog.LevelInfo
+			return
+		}
+
+		duckMinLevel := slog.LevelInfo
+		err := duckMinLevel.UnmarshalText([]byte(lvl))
+		if err != nil {
+			handler.minLvl = slog.LevelInfo
+			return
+		}
+		handler.minLvl = duckMinLevel
 	}
 }
 
