@@ -12,8 +12,8 @@ This module follows the DuckBug SDK architecture from `duckbug-sdk-spec`, while 
 
 ## Compatibility
 
-- Go `1.25.8+` is the initial compatibility target.
-- CI validates the module on Go `1.25.8` and `1.26.1`.
+- Go `1.25.9+` is the initial compatibility target.
+- CI validates the module on Go `1.25.9` and `1.26.1`.
 - Releases are expected to be published via git tags in the `v*` format.
 
 ## Install
