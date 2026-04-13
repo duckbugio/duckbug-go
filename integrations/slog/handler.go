@@ -39,7 +39,7 @@ func WithMinLevel(level slog.Level) Option {
 	}
 }
 
-func WithUnparsedMinLevel(level string) Option {
+func WithMinLevelString(level string) Option {
 	return func(handler *Handler) {
 		lvl := strings.TrimSpace(level)
 		if lvl == "" {

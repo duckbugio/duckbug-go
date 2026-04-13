@@ -114,7 +114,7 @@ func TestWithUnparsedMinLevel(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			handler := NewHandler(nil, nil, WithUnparsedMinLevel(tt.level))
+			handler := NewHandler(nil, nil, WithMinLevelString(tt.level))
 
 			if handler.minLvl != tt.want {
 				t.Fatalf("expected min level %v, got %v", tt.want, handler.minLvl)
