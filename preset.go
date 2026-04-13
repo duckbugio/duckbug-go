@@ -64,7 +64,7 @@ func WithEnvironment(environment string) Option {
 		if env == "" {
 			return
 		}
-		cfg.environment = environment
+		cfg.environment = env
 	}
 }
 
