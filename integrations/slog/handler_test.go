@@ -40,7 +40,7 @@ func TestHandlerCapturesSlogRecord(t *testing.T) {
 		},
 	})
 
-	logger := slog.New(NewHandler(duck, nil, WithMinLevel("info"))).With("service", "api")
+	logger := slog.New(NewHandler(duck, nil, WithMinLevel(slog.LevelInfo))).With("service", "api")
 	logger.Info("hello", "count", 2)
 
 	if len(provider.events) != 1 {
@@ -76,6 +76,50 @@ func TestHandlerSkipsBelowMinLevelByDefault(t *testing.T) {
 
 	if len(provider.events) != 0 {
 		t.Fatalf("expected no captured events below default min level, got %d", len(provider.events))
+	}
+}
+
+func TestWithUnparsedMinLevel(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		level string
+		want  slog.Level
+	}{
+		{
+			name:  "parses valid level",
+			level: slog.LevelDebug.String(),
+			want:  slog.LevelDebug,
+		},
+		{
+			name:  "trims whitespace",
+			level: " " + slog.LevelError.String() + " ",
+			want:  slog.LevelError,
+		},
+		{
+			name:  "defaults empty level to info",
+			level: "   ",
+			want:  slog.LevelInfo,
+		},
+		{
+			name:  "defaults invalid level to info",
+			level: "not-a-level",
+			want:  slog.LevelInfo,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			handler := NewHandler(nil, nil, WithUnparsedMinLevel(tt.level))
+
+			if handler.minLvl != tt.want {
+				t.Fatalf("expected min level %v, got %v", tt.want, handler.minLvl)
+			}
+		})
 	}
 }
 

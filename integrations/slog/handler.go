@@ -33,7 +33,13 @@ func NewHandler(duck *duckbug.Duck, next slog.Handler, options ...Option) *Handl
 	return handler
 }
 
-func WithMinLevel(level string) Option {
+func WithMinLevel(level slog.Level) Option {
+	return func(handler *Handler) {
+		handler.minLvl = level
+	}
+}
+
+func WithUnparsedMinLevel(level string) Option {
 	return func(handler *Handler) {
 		lvl := strings.TrimSpace(level)
 		if lvl == "" {
