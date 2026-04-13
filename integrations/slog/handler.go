@@ -41,13 +41,13 @@ func WithMinLevel(level string) Option {
 			return
 		}
 
-		duckMinLevel := slog.LevelInfo
-		err := duckMinLevel.UnmarshalText([]byte(lvl))
+		minLevel := slog.LevelInfo
+		err := minLevel.UnmarshalText([]byte(lvl))
 		if err != nil {
 			handler.minLvl = slog.LevelInfo
 			return
 		}
-		handler.minLvl = duckMinLevel
+		handler.minLvl = minLevel
 	}
 }
 
