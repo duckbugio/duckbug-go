@@ -79,6 +79,50 @@ func TestHandlerSkipsBelowMinLevelByDefault(t *testing.T) {
 	}
 }
 
+func TestWithUnparsedMinLevel(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		level string
+		want  slog.Level
+	}{
+		{
+			name:  "parses valid level",
+			level: slog.LevelDebug.String(),
+			want:  slog.LevelDebug,
+		},
+		{
+			name:  "trims whitespace",
+			level: " " + slog.LevelError.String() + " ",
+			want:  slog.LevelError,
+		},
+		{
+			name:  "defaults empty level to info",
+			level: "   ",
+			want:  slog.LevelInfo,
+		},
+		{
+			name:  "defaults invalid level to info",
+			level: "not-a-level",
+			want:  slog.LevelInfo,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			handler := NewHandler(nil, nil, WithMinLevelString(tt.level))
+
+			if handler.minLvl != tt.want {
+				t.Fatalf("expected min level %v, got %v", tt.want, handler.minLvl)
+			}
+		})
+	}
+}
+
 func asMap(t *testing.T, value any) map[string]any {
 	t.Helper()
 	mapped, ok := value.(map[string]any)
