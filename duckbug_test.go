@@ -339,6 +339,35 @@ func TestNewProvidesShortDefaultSetup(t *testing.T) {
 	}
 }
 
+func TestDuckPing(t *testing.T) {
+	t.Parallel()
+
+	duck := duckbug.New(
+		"https://duckbug.io/api/ingest/project:key",
+		duckbug.WithProviderOptions(
+			duckbug.WithTransport(&captureTransport{}),
+			duckbug.WithAsync(false),
+		),
+	)
+	if err := duck.Ping(); err != nil {
+		t.Fatalf("expected initialized duck to ping cleanly, got %v", err)
+	}
+
+	var nilDuck *duckbug.Duck
+	if err := nilDuck.Ping(); err == nil {
+		t.Fatal("expected nil duck to fail ping")
+	}
+
+	if err := (&duckbug.Duck{}).Ping(); err == nil {
+		t.Fatal("expected zero-value duck to fail ping")
+	}
+
+	noProviders := duckbug.NewDuck(duckbug.Config{})
+	if err := noProviders.Ping(); err == nil {
+		t.Fatal("expected duck without providers to fail ping")
+	}
+}
+
 func validateAgainstSchema(t *testing.T, schemaPath string, payload map[string]any) {
 	t.Helper()
 
