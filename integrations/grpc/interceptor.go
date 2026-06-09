@@ -255,11 +255,11 @@ func captureTransaction(
 	if duck == nil || tx == nil {
 		return
 	}
-	if !force && !shouldCaptureTransaction(config.TransactionSampleRate, code) {
+	if !force && !shouldCaptureTransaction(config.TransactionSampleRate, code, config.ShouldCapture) {
 		return
 	}
 
-	tx.AddMeasurement("grpc.status_code", uint32(code), "")
+	tx.AddMeasurement("grpc.status_code", uint32(code), "code")
 	tx.Finish(transactionStatusFromCode(code))
 	duck.CaptureTransactionContext(ctx, tx)
 }
@@ -331,6 +331,10 @@ func metadataToMap(ctx context.Context) map[string]any {
 		if len(values) == 0 {
 			continue
 		}
+		if strings.HasSuffix(key, "-bin") {
+			// Binary metadata holds non-UTF8 bytes that would corrupt the JSON payload.
+			continue
+		}
 		if len(values) == 1 {
 			out[key] = values[0]
 			continue
@@ -360,8 +364,8 @@ func grpcStatusError(code codes.Code, fullMethod string) error {
 	return fmt.Errorf("grpc %s: %s", code.String(), method)
 }
 
-func shouldCaptureTransaction(sampleRate float64, code codes.Code) bool {
-	if defaultShouldCapture(code) {
+func shouldCaptureTransaction(sampleRate float64, code codes.Code, shouldCapture func(codes.Code) bool) bool {
+	if shouldCapture != nil && shouldCapture(code) {
 		return true
 	}
 	switch {

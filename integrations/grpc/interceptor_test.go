@@ -136,6 +136,7 @@ func TestUnaryInterceptorAttachesRequestContext(t *testing.T) {
 	}
 
 	md := metadata.New(map[string]string{"authorization": "Bearer secret", "x-tenant": "acme"})
+	md.Set("grpc-trace-bin", string([]byte{0xff, 0xfe, 0x00, 0x01}))
 	ctx := metadata.NewIncomingContext(context.Background(), md)
 
 	if _, err := interceptor(ctx, nil, info, handler); err != nil {
@@ -155,6 +156,9 @@ func TestUnaryInterceptorAttachesRequestContext(t *testing.T) {
 	}
 	if headers["x-tenant"] != "acme" {
 		t.Fatalf("expected x-tenant metadata to be preserved, got %#v", headers["x-tenant"])
+	}
+	if _, ok := headers["grpc-trace-bin"]; ok {
+		t.Fatalf("expected binary metadata to be dropped, got %#v", headers["grpc-trace-bin"])
 	}
 	contextMap := asMap(t, payload["context"])
 	if contextMap["password"] != "***" {
