@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"runtime"
 	"runtime/debug"
@@ -63,6 +64,32 @@ func NewDuck(config Config) *Duck {
 		now:              nowFn,
 		eventIDGenerator: eventIDGenerator,
 	}
+}
+
+func (d *Duck) Ping() error {
+	if d == nil {
+		return errors.New("duckbug: client is nil")
+	}
+
+	switch {
+	case d.scope == nil:
+		return errors.New("duckbug: scope is not initialized")
+	case d.pond == nil:
+		return errors.New("duckbug: pond is not initialized")
+	case d.now == nil:
+		return errors.New("duckbug: now function is not initialized")
+	case d.eventIDGenerator == nil:
+		return errors.New("duckbug: event id generator is not initialized")
+	}
+
+	d.providersMu.RLock()
+	providerCount := len(d.providers)
+	d.providersMu.RUnlock()
+	if providerCount == 0 {
+		return errors.New("duckbug: no providers registered")
+	}
+
+	return nil
 }
 
 func (d *Duck) RegisterProvider(provider Provider) {
