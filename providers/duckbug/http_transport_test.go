@@ -50,15 +50,31 @@ func TestHTTPTransportRetriesOnlyRecoverableStatuses(t *testing.T) {
 		status           int
 		expectedRequests int32
 	}{
+		// The edge in front of a DuckBug installation can time out the request
+		// body on its own (nginx client_body_timeout). 408 says nothing about
+		// the payload, and RFC 9110 states the request may be repeated as is.
+		{name: "request timeout", status: http.StatusRequestTimeout, expectedRequests: maxRetries + 1},
 		{name: "too many requests", status: http.StatusTooManyRequests, expectedRequests: maxRetries + 1},
 		{name: "internal server error", status: http.StatusInternalServerError, expectedRequests: maxRetries + 1},
 		{name: "bad gateway", status: http.StatusBadGateway, expectedRequests: maxRetries + 1},
 		{name: "service unavailable", status: http.StatusServiceUnavailable, expectedRequests: maxRetries + 1},
 		{name: "gateway timeout", status: http.StatusGatewayTimeout, expectedRequests: maxRetries + 1},
-		// 501 means the capability is not implemented in this installation:
-		// repeating the request cannot change the answer.
+		// Codes this SDK has never been taught about stay transient. They are
+		// what a customer's own edge or a newer server invents, and dropping
+		// the event on the first one is the failure an error tracker must not
+		// have. These two cases pin the rule against a future allow list.
+		{name: "insufficient storage", status: http.StatusInsufficientStorage, expectedRequests: maxRetries + 1},
+		{name: "unknown proxy 5xx", status: 599, expectedRequests: maxRetries + 1},
+		// 501 is the single hole in the 5xx range: the capability is not
+		// configured in this installation, so repeating cannot change it.
 		{name: "not implemented", status: http.StatusNotImplemented, expectedRequests: 1},
 		{name: "bad request", status: http.StatusBadRequest, expectedRequests: 1},
+		// 409 is the backend reporting the event as already ingested, and 413
+		// and 415 are the edge and the backend rejecting this exact payload.
+		// None of them get better by being sent again.
+		{name: "conflict", status: http.StatusConflict, expectedRequests: 1},
+		{name: "payload too large", status: http.StatusRequestEntityTooLarge, expectedRequests: 1},
+		{name: "unsupported media type", status: http.StatusUnsupportedMediaType, expectedRequests: 1},
 	}
 
 	for _, testCase := range cases {

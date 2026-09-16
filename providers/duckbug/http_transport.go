@@ -152,18 +152,65 @@ func (t *HTTPTransport) execute(ctx context.Context, url string, body []byte, at
 	return result
 }
 
-// shouldRetry reports whether repeating the identical request can end differently.
-// Every 5xx is treated as transient except 501: that one means the capability is
-// not implemented in this installation at all, so no amount of waiting helps -
-// only an operator can change the answer.
+// shouldRetry reports whether repeating the identical request can end
+// differently. This predicate is the shared one: duckbug-js and duckbug-php
+// answer exactly the same question the same way, and a change here has to land
+// in all three.
+//
+// The rule is "transient unless proven final": a request that never produced a
+// response, 408, 429 and every 5xx are worth another attempt; 501 is the single
+// carve-out; everything else is the final answer.
+//
+// It is written as a rule with one hole rather than as a list of retriable
+// codes on purpose. This client does not only talk to DuckBug's ingest - a
+// DuckBug installation sits behind whatever edge the customer runs, and that
+// edge invents statuses of its own. An allow list turns every code it has not
+// been taught about into a silently dropped event, which is the one failure an
+// error tracker must not have, and widening it means shipping a new SDK into
+// every consumer's dependency tree. Being wrong the other way costs at most
+// MaxRetries extra requests with bounded backoff, and the backend treats
+// eventId as the idempotency key, so a retry of a request that did arrive
+// cannot create a second event.
+//
+// 408 is retried because it is the edge timing out the request body
+// (nginx client_body_timeout and friends), never a verdict on the payload;
+// RFC 9110 states outright that such a request may be repeated unchanged.
+//
+// 501 is the hole: it is DuckBug stating that the capability is not configured
+// in this installation, and only an operator can change that. The backend
+// reaches for 501 over 503 in exactly that case so clients stop retrying,
+// because 503 would promise that waiting helps. A 501 from an intermediary
+// means the same thing one layer out, so the answer is the same either way.
+//
+// Do not widen this carve-out to 503. On the ingest path a 503 is the edge
+// during a redeploy - the transient case this predicate exists for.
+//
+// Deliberate differences from the other two SDKs, both outside this function:
+//   - a request that never reached a response arrives here as ErrorMessage,
+//     because that is how net/http reports a dial, TLS, timeout or cancelled
+//     context failure. duckbug-php sees the same case as a cURL errno and
+//     duckbug-js as a rejected fetch promise; all three retry it.
+//   - retries are opt-in in this SDK (Config.MaxRetries defaults to 0) while
+//     duckbug-php and duckbug-js default to 2, because this transport can run
+//     inline in the caller's request path. The decision below is shared; the
+//     budget spent on it is not.
+//
+// The 429 that DuckBug's rate limiter returns carries Retry-After, which this
+// transport does not read - backoffDelay decides on its own. Honouring it is a
+// separate change and has to land in all three SDKs together.
 func shouldRetry(result core.TransportResult) bool {
 	if result.ErrorMessage != "" {
 		return true
 	}
-	if result.StatusCode == http.StatusNotImplemented {
+
+	switch result.StatusCode {
+	case http.StatusNotImplemented:
 		return false
+	case http.StatusRequestTimeout, http.StatusTooManyRequests:
+		return true
 	}
-	return result.StatusCode == http.StatusTooManyRequests || result.StatusCode >= http.StatusInternalServerError
+
+	return result.StatusCode >= http.StatusInternalServerError
 }
 
 func joinURL(base string, segments ...string) string {
