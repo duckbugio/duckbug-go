@@ -130,6 +130,7 @@ func main() {
 
 - The first-party provider uses a background queue by default, so `Log`, `Quack`, `CaptureTransaction` and `slog` bridge calls do not block the hot path on network I/O.
 - The default transport is tuned for application safety: short connection timeout and no retry storm on the request path.
+- Delivery is retried on transport errors, `429` and server faults; `501 Not Implemented` is final, because it means the capability is not configured in that DuckBug installation and repeating the request cannot change that.
 - `Flush(...)` waits for the provider queue and sends any buffered log/error batches, so it should be called on graceful shutdown.
 
 ## slog integration
