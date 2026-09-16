@@ -152,19 +152,10 @@ func (t *HTTPTransport) execute(ctx context.Context, url string, body []byte, at
 	return result
 }
 
-// shouldRetry reports whether sending the very same request again can plausibly
-// end differently: transport errors, throttling (429) and server-side faults are
-// expected to clear up on their own, so they are worth another attempt.
-//
-// 501 is the deliberate hole in the 5xx range. It is the server stating that it
-// does not implement the capability at all - DuckBug answers it when a feature
-// is not configured in this installation - and no amount of waiting turns that
-// into a success; an operator has to change the installation first. Repeating it
-// only burns the caller's budget and delays the error they need to see.
-//
-// The exception is written as a single carve-out rather than an allow list of
-// retriable codes on purpose: every other 5xx, including codes that proxies or
-// future server versions invent, keeps its transient-by-default treatment.
+// shouldRetry reports whether repeating the identical request can end differently.
+// Every 5xx is treated as transient except 501: that one means the capability is
+// not implemented in this installation at all, so no amount of waiting helps -
+// only an operator can change the answer.
 func shouldRetry(result core.TransportResult) bool {
 	if result.ErrorMessage != "" {
 		return true

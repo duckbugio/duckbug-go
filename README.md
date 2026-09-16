@@ -25,7 +25,7 @@ go get github.com/duckbugio/duckbug-go
 To install a tagged release:
 
 ```bash
-go get github.com/duckbugio/duckbug-go@v0.2.1
+go get github.com/duckbugio/duckbug-go@v0.3.1
 ```
 
 ## Quick start
@@ -130,7 +130,7 @@ func main() {
 
 - The first-party provider uses a background queue by default, so `Log`, `Quack`, `CaptureTransaction` and `slog` bridge calls do not block the hot path on network I/O.
 - The default transport is tuned for application safety: short connection timeout and no retry storm on the request path.
-- Delivery is retried on transport errors, `429` and server faults; `501 Not Implemented` is final, because it means the capability is not configured in that DuckBug installation and repeating the request cannot change that.
+- Delivery is not retried by default: `MaxRetries` is `0`, so a failed send is reported through the transport failure hook instead of being repeated. Where retries are enabled with `WithMaxRetries(...)`, transport errors, `429` and server faults are retried, while `501 Not Implemented` never is: it means the capability is not configured in that DuckBug installation, so repeating the request cannot change the answer.
 - `Flush(...)` waits for the provider queue and sends any buffered log/error batches, so it should be called on graceful shutdown.
 
 ## slog integration
