@@ -46,10 +46,16 @@ func TestHTTPTransportRetriesOnlyRecoverableStatuses(t *testing.T) {
 	const maxRetries = 2
 
 	cases := []struct {
-		name             string
-		status           int
+		name   string
+		status int
+		// dropConnection answers by hijacking and closing the connection
+		// instead of writing a status, so the client ends up with an error and
+		// no response at all - the ErrorMessage branch of shouldRetry, which is
+		// how a dial, TLS, timeout or cancellation failure reaches it.
+		dropConnection   bool
 		expectedRequests int32
 	}{
+		{name: "transport error", dropConnection: true, expectedRequests: maxRetries + 1},
 		// The edge in front of a DuckBug installation can time out the request
 		// body on its own (nginx client_body_timeout). 408 says nothing about
 		// the payload, and RFC 9110 states the request may be repeated as is.
@@ -84,6 +90,15 @@ func TestHTTPTransportRetriesOnlyRecoverableStatuses(t *testing.T) {
 			var requests atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				requests.Add(1)
+				if testCase.dropConnection {
+					conn, _, err := w.(http.Hijacker).Hijack()
+					if err != nil {
+						t.Errorf("hijack failed: %v", err)
+						return
+					}
+					conn.Close()
+					return
+				}
 				w.WriteHeader(testCase.status)
 			}))
 			defer server.Close()
@@ -101,14 +116,21 @@ func TestHTTPTransportRetriesOnlyRecoverableStatuses(t *testing.T) {
 				"message": "hello",
 			})
 
-			if result.StatusCode != testCase.status {
+			if testCase.dropConnection {
+				if result.ErrorMessage == "" {
+					t.Fatalf("expected a transport error message, got none (status %d)", result.StatusCode)
+				}
+				if result.StatusCode != 0 {
+					t.Fatalf("expected no status for a dropped connection, got %d", result.StatusCode)
+				}
+			} else if result.StatusCode != testCase.status {
 				t.Fatalf("expected status %d, got %d", testCase.status, result.StatusCode)
 			}
 			if got := requests.Load(); got != testCase.expectedRequests {
-				t.Fatalf("expected %d request(s) for status %d, got %d", testCase.expectedRequests, testCase.status, got)
+				t.Fatalf("expected %d request(s) for %q, got %d", testCase.expectedRequests, testCase.name, got)
 			}
 			if int32(result.Attempts) != testCase.expectedRequests {
-				t.Fatalf("expected %d reported attempt(s) for status %d, got %d", testCase.expectedRequests, testCase.status, result.Attempts)
+				t.Fatalf("expected %d reported attempt(s) for %q, got %d", testCase.expectedRequests, testCase.name, result.Attempts)
 			}
 		})
 	}
