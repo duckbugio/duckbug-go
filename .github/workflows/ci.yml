@@ -63,22 +63,29 @@ jobs:
       # Scanned with the current stable toolchain rather than the floor in
       # go.mod: this job answers "are our code and our dependencies vulnerable",
       # which is what a pull request can actually fix. Standard library
-      # advisories against the declared floor would redden every open PR until
-      # someone raises the minimum Go version for all consumers; the test matrix
-      # above is what keeps that floor honest.
+      # advisories against the declared floor would redden every run until
+      # someone raises the minimum Go version for all consumers; the floor is
+      # exercised by the test job instead.
+      #
+      # The price is that this job is not reproducible from the SHA alone. A new
+      # Go release changes the standard library being analysed, and the advisory
+      # database is fetched at run time, so the same commit can be green today
+      # and red tomorrow. That is the point - an advisory published tomorrow is
+      # news - but it means a red run here is not necessarily the fault of the
+      # commit that triggered it.
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
           go-version: stable
           cache: true
 
-      # Pinned on purpose: with @latest any x/vuln release can raise its own Go
-      # requirement above the toolchain here, and the gate then dies at install
-      # time without scanning anything - that is how this job broke. The
-      # vulnerability database is fetched at run time, so a pinned binary still
-      # sees new advisories; bump this pin deliberately.
+      # The scanner version is pinned in .github/tools/go.mod, not written here
+      # as @latest: @latest let an x/vuln release that required a newer Go than
+      # this job ran on kill the gate at install time. Keeping the pin in a
+      # manifest means Dependabot bumps it when it ages; a version string in a
+      # workflow file ages silently.
       - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+        run: go install -C .github/tools golang.org/x/vuln/cmd/govulncheck
 
       - name: Run govulncheck
         run: govulncheck ./...

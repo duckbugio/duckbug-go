@@ -1,0 +1,39 @@
+version: 2
+updates:
+  # The gate sat red from 30 July onwards because grpc stayed on a vulnerable
+  # version and nothing said so out loud. This is the part that says so.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+      - go
+    groups:
+      go-minor:
+        update-types:
+          - minor
+          - patch
+
+  # CI tool versions, currently govulncheck. They live in their own module so
+  # that a stale scanner shows up as a pull request instead of ageing inside a
+  # workflow file where nobody looks at it.
+  - package-ecosystem: gomod
+    directory: /.github/tools
+    schedule:
+      interval: weekly
+      day: monday
+    labels:
+      - dependencies
+      - ci
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    labels:
+      - dependencies
+      - ci
