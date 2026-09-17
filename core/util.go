@@ -13,7 +13,12 @@ import (
 	"time"
 )
 
-func defaultEventID() string {
+// NewEventID mints an event id in the only shape ingest accepts: the server
+// validates the field as uuid4, so a random UUID with the version and variant
+// bits set is what makes an event deduplicable rather than rejected with 400.
+// It is exported because the id is not optional for anyone assembling an
+// ingest payload by hand - see ensureEventID in providers/duckbug.
+func NewEventID() string {
 	var data [16]byte
 	if _, err := rand.Read(data[:]); err == nil {
 		data[6] = (data[6] & 0x0f) | 0x40
