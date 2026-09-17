@@ -152,9 +152,16 @@ func (t *HTTPTransport) execute(ctx context.Context, url string, body []byte, at
 	return result
 }
 
+// shouldRetry reports whether repeating the identical request can end differently.
+// Every 5xx is treated as transient except 501: that one means the capability is
+// not implemented in this installation at all, so no amount of waiting helps -
+// only an operator can change the answer.
 func shouldRetry(result core.TransportResult) bool {
 	if result.ErrorMessage != "" {
 		return true
+	}
+	if result.StatusCode == http.StatusNotImplemented {
+		return false
 	}
 	return result.StatusCode == http.StatusTooManyRequests || result.StatusCode >= http.StatusInternalServerError
 }
