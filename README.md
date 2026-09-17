@@ -12,8 +12,8 @@ This module follows the DuckBug SDK architecture from `duckbug-sdk-spec`, while 
 
 ## Compatibility
 
-- Go `1.25.9+` is the initial compatibility target.
-- CI validates the module on Go `1.25.9` and `1.26.1`.
+- Go `1.25.13+`. The `go` directive in `go.mod` is the source of truth; this line is a copy for readers and loses to it if the two ever disagree. The floor is a patched release of the 1.25 line: earlier 1.25 patches carry advisories in `crypto/tls`, `encoding/asn1`, `net/url` and `net/http` that this module's HTTP transport reaches.
+- Every change is validated on that minimum and on the current Go release. The exact versions are the matrix in the CI workflow under `.github/workflows/`, and are not repeated here.
 - Releases are expected to be published via git tags in the `v*` format.
 
 ## Install
