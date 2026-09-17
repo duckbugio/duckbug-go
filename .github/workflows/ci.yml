@@ -12,5 +12,10 @@ permissions:
   contents: read
 
 jobs:
+  # Reported as "checks / Test (Go ...)" and "checks / Security Scan": a called
+  # workflow's jobs are prefixed with the name of the job that calls them. Read
+  # the exact context names off the first run of this file on main - this
+  # workflow only triggers for pushes and pull requests whose base is main - and
+  # configure branch protection from those.
   checks:
     uses: ./.github/workflows/go-checks.yml

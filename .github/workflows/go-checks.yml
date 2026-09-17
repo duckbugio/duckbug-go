@@ -1,11 +1,12 @@
 # The single definition of what "checked" means for this module. CI runs it on
 # pull requests, the release workflow runs it on a tag, and neither owns a copy.
 #
-# It exists because the copies had already drifted: the release path kept the
-# govulncheck@latest install that had broken CI, and it verified tags on the
-# floor toolchain only, while pull requests were verified on the whole matrix.
-# A release that is checked less thoroughly than a pull request is the wrong way
-# round, so the matrix now applies to both.
+# It exists because the copies had already drifted - the release path verified
+# tags on the floor toolchain only, while pull requests were verified on the
+# whole matrix - and because drift there is invisible: release.yml runs only on
+# a tag, so no check on any commit can report it. A release that is checked less
+# thoroughly than a pull request is the wrong way round, so the matrix now
+# applies to both.
 #
 # Jobs called through workflow_call report as "<calling job> / <job name>", so
 # the check contexts are "checks / Test (Go ...)" and "checks / Security Scan".
@@ -21,6 +22,12 @@ jobs:
   test:
     name: Test (Go ${{ matrix.go-version }})
     runs-on: ubuntu-latest
+    # Without this, a floor raised in go.mod would be served by a toolchain Go
+    # downloads on the fly: both legs would quietly test the newer version while
+    # the job name still claimed the old one, and nothing would fail. Pinning to
+    # the installed toolchain turns that drift into a build error instead.
+    env:
+      GOTOOLCHAIN: local
     strategy:
       fail-fast: false
       matrix:
