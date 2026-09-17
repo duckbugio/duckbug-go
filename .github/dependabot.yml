@@ -2,6 +2,11 @@ version: 2
 updates:
   # The gate sat red from 30 July onwards because grpc stayed on a vulnerable
   # version and nothing said so out loud. This is the part that says so.
+  #
+  # It proposes, it does not decide: expect it to offer the grpc upgrade that
+  # was declined on purpose, because that one pulls x/net past go 1.26 and takes
+  # the module floor with it, dropping every Go 1.25 consumer. Read what an
+  # upgrade does to the floor before merging it.
   - package-ecosystem: gomod
     directory: /
     schedule:
