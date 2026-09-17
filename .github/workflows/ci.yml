@@ -13,9 +13,31 @@ permissions:
 
 jobs:
   # Reported as "checks / Test (Go ...)" and "checks / Security Scan": a called
-  # workflow's jobs are prefixed with the name of the job that calls them. Read
-  # the exact context names off the first run of this file on main - this
-  # workflow only triggers for pushes and pull requests whose base is main - and
-  # configure branch protection from those.
+  # workflow's jobs are prefixed with the name of the job that calls them. Those
+  # names follow the matrix, so branch protection requires the gate below
+  # instead and survives a toolchain being added or dropped.
   checks:
     uses: ./.github/workflows/go-checks.yml
+
+  # The one required check, and the only name branch protection should be given:
+  # "CI Gate". It is fixed, so protection is configured once, and it never
+  # reports "skipped" - a skipped job can count as a passing required check,
+  # which would let a pull request through on a failed matrix. if: always() plus
+  # an explicit look at the result closes that hole. Note this workflow runs
+  # only for pushes to main and pull requests whose base is main, so a pull
+  # request stacked on another branch shows no gate until it is retargeted.
+  gate:
+    name: CI Gate
+    runs-on: ubuntu-latest
+    needs: checks
+    if: always()
+
+    steps:
+      - name: Require every check to have succeeded
+        run: |
+          result="${{ needs.checks.result }}"
+          echo "checks: $result"
+          if [ "$result" != "success" ]; then
+            echo "CI Gate fails because the checks workflow did not succeed."
+            exit 1
+          fi
