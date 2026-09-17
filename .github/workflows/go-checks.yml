@@ -1,0 +1,106 @@
+# The single definition of what "checked" means for this module. CI runs it on
+# pull requests, the release workflow runs it on a tag, and neither owns a copy.
+#
+# It exists because the copies had already drifted - the release path verified
+# tags on the floor toolchain only, while pull requests were verified on the
+# whole matrix - and because drift there is invisible: release.yml runs only on
+# a tag, so no check on any commit can report it. A release that is checked less
+# thoroughly than a pull request is the wrong way round, so the matrix now
+# applies to both.
+#
+# Jobs called through workflow_call report as "<calling job> / <job name>", so
+# the check contexts are "checks / Test (Go ...)" and "checks / Security Scan".
+name: Go checks
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (Go ${{ matrix.go-version }})
+    runs-on: ubuntu-latest
+    # Without this, a floor raised in go.mod would be served by a toolchain Go
+    # downloads on the fly: both legs would quietly test the newer version while
+    # the job name still claimed the old one, and nothing would fail. Pinning to
+    # the installed toolchain turns that drift into a build error instead.
+    env:
+      GOTOOLCHAIN: local
+    strategy:
+      fail-fast: false
+      matrix:
+        go-version:
+          - "1.25.13"
+          - "1.26.1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache: true
+
+      # Cheap checks before the slow one, so a formatting slip does not wait
+      # behind the race detector.
+      - name: Verify formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not gofmt-formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Verify module metadata
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Run tests
+        run: go test -race ./...
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # Scanned with the current stable toolchain rather than the floor in
+      # go.mod: this job answers "are our code and our dependencies vulnerable",
+      # which is what a pull request can actually fix. Standard library
+      # advisories against the declared floor would redden every run until
+      # someone raises the minimum Go version for all consumers; the floor is
+      # exercised by the test job instead.
+      #
+      # The price is that this job is not reproducible from the SHA alone. A new
+      # Go release changes the standard library being analysed, and the advisory
+      # database is fetched at run time, so the same commit can be green today
+      # and red tomorrow. That is the point - an advisory published tomorrow is
+      # news - but it means a red run here is not necessarily the fault of the
+      # commit that triggered it.
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: true
+
+      # The scanner version is pinned in .github/tools/go.mod, not written here
+      # as @latest: @latest let an x/vuln release that required a newer Go than
+      # this job ran on kill the gate at install time. Keeping the pin in a
+      # manifest means Dependabot bumps it when it ages; a version string in a
+      # workflow file ages silently.
+      - name: Install govulncheck
+        run: go install -C .github/tools golang.org/x/vuln/cmd/govulncheck
+
+      - name: Run govulncheck
+        run: govulncheck ./...
