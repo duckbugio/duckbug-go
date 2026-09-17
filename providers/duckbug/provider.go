@@ -349,7 +349,34 @@ func (p *Provider) preparePayload(eventType core.EventType, payload map[string]a
 		return nil, false
 	}
 
+	ensureEventID(prepared)
+
 	return prepared, true
+}
+
+// ensureEventID guarantees that every payload leaving this provider carries an
+// idempotency key. Ingest deduplicates on "eventId" - a Postgres primary key
+// with ON CONFLICT DO NOTHING, no expiry, on the single and the batch route
+// alike - but only for a payload that has one: the field is optional there, and
+// without it the server mints a fresh id per request, so the retries in
+// HTTPTransport would store the same event once per attempt.
+//
+// This is the last point every payload passes through before the transport.
+// core.Duck sets the id on everything it builds, so filling it here is a no-op
+// on the normal path; it is a caller driving the provider straight through
+// CaptureEvent, and a beforeSend hook that dropped or blanked the field, that
+// would otherwise reach ingest unidentified.
+//
+// A usable id the caller supplied always wins. Anything else - absent, blank,
+// or not a string - is not an id ingest would honour (it validates uuid4 and
+// answers 400 otherwise), so it is replaced rather than passed through to be
+// rejected.
+func ensureEventID(payload map[string]any) {
+	if existing, ok := payload["eventId"].(string); ok && strings.TrimSpace(existing) != "" {
+		return
+	}
+
+	payload["eventId"] = core.NewEventID()
 }
 
 func (p *Provider) flushType(ctx context.Context, eventType core.EventType) {

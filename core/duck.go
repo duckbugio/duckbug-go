@@ -34,7 +34,7 @@ func NewDuck(config Config) *Duck {
 
 	eventIDGenerator := config.EventIDGenerator
 	if eventIDGenerator == nil {
-		eventIDGenerator = defaultEventID
+		eventIDGenerator = NewEventID
 	}
 
 	platform := normalizeString(config.Platform)

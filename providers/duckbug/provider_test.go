@@ -3,6 +3,7 @@ package duckbugprovider
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"sync"
 	"testing"
 
@@ -283,5 +284,119 @@ func TestProviderConfigEnablesAsyncByDefault(t *testing.T) {
 	}
 	if provider.queue == nil {
 		t.Fatal("expected async provider queue to be initialized")
+	}
+}
+
+// uuid4Pattern is the server's `validate:"omitempty,uuid4"` rule spelled out:
+// ingest rejects anything else with 400, so an id this provider mints has to
+// match it or the event is dropped instead of deduplicated.
+var uuid4Pattern = regexp.MustCompile(
+	`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`,
+)
+
+func TestProviderMintsEventIDWhenCallerOmitsIt(t *testing.T) {
+	t.Parallel()
+
+	transport := &fakeTransport{sendResult: core.TransportResult{StatusCode: 201}}
+	provider := New(
+		"https://duckbug.local/api/ingest/project:key",
+		WithTransport(transport),
+		WithAsync(false),
+	)
+
+	provider.CaptureEvent(context.Background(), core.NewEvent(core.EventTypeLog, map[string]any{
+		"time":    1,
+		"level":   "INFO",
+		"message": "no id from the caller",
+	}))
+
+	eventID, ok := transport.lastPayload["eventId"].(string)
+	if !ok {
+		t.Fatalf("expected provider to mint an eventId, got %#v", transport.lastPayload["eventId"])
+	}
+	if !uuid4Pattern.MatchString(eventID) {
+		t.Fatalf("expected a uuid4 the server accepts, got %q", eventID)
+	}
+}
+
+func TestProviderMintsDistinctEventIDsPerEvent(t *testing.T) {
+	t.Parallel()
+
+	transport := &fakeTransport{batchResult: core.TransportResult{StatusCode: 201}}
+	provider := New(
+		"https://duckbug.local/api/ingest/project:key",
+		WithTransport(transport),
+		WithAsync(false),
+		WithBatchSize(2),
+	)
+
+	for i := 0; i < 2; i++ {
+		provider.CaptureEvent(context.Background(), core.NewEvent(core.EventTypeLog, map[string]any{
+			"time":    i + 1,
+			"level":   "INFO",
+			"message": "batched without an id",
+		}))
+	}
+
+	if len(transport.lastBatch) != 2 {
+		t.Fatalf("expected two batch items, got %d", len(transport.lastBatch))
+	}
+	first, _ := transport.lastBatch[0]["eventId"].(string)
+	second, _ := transport.lastBatch[1]["eventId"].(string)
+	if !uuid4Pattern.MatchString(first) || !uuid4Pattern.MatchString(second) {
+		t.Fatalf("expected uuid4 ids on both batch items, got %q and %q", first, second)
+	}
+	if first == second {
+		t.Fatalf("expected distinct ids per event, both were %q", first)
+	}
+}
+
+func TestProviderKeepsCallerSuppliedEventID(t *testing.T) {
+	t.Parallel()
+
+	transport := &fakeTransport{sendResult: core.TransportResult{StatusCode: 201}}
+	provider := New(
+		"https://duckbug.local/api/ingest/project:key",
+		WithTransport(transport),
+		WithAsync(false),
+	)
+
+	const callerID = "550e8400-e29b-41d4-a716-446655440000"
+	provider.CaptureEvent(context.Background(), core.NewEvent(core.EventTypeLog, map[string]any{
+		"eventId": callerID,
+		"time":    1,
+		"level":   "INFO",
+		"message": "caller owns the id",
+	}))
+
+	if got := transport.lastPayload["eventId"]; got != callerID {
+		t.Fatalf("expected the caller's id to survive, got %#v", got)
+	}
+}
+
+func TestProviderRestoresEventIDDroppedByBeforeSend(t *testing.T) {
+	t.Parallel()
+
+	transport := &fakeTransport{sendResult: core.TransportResult{StatusCode: 201}}
+	provider := New(
+		"https://duckbug.local/api/ingest/project:key",
+		WithTransport(transport),
+		WithAsync(false),
+		WithBeforeSend(func(_ core.EventType, payload map[string]any) (map[string]any, bool) {
+			delete(payload, "eventId")
+			return payload, true
+		}),
+	)
+
+	provider.CaptureEvent(context.Background(), core.NewEvent(core.EventTypeLog, map[string]any{
+		"eventId": "550e8400-e29b-41d4-a716-446655440000",
+		"time":    1,
+		"level":   "INFO",
+		"message": "beforeSend dropped the id",
+	}))
+
+	eventID, ok := transport.lastPayload["eventId"].(string)
+	if !ok || !uuid4Pattern.MatchString(eventID) {
+		t.Fatalf("expected a uuid4 to be restored after beforeSend, got %#v", transport.lastPayload["eventId"])
 	}
 }
