@@ -1,10 +1,8 @@
 package nethttp
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -66,32 +64,27 @@ func Middleware(duck *duckbug.Duck, options ...Option) func(http.Handler) http.H
 			ctx := pond.WithRequestContext(r.Context(), reqCtx)
 			r = r.WithContext(ctx)
 
-			tracker := &responseWriterTracker{
-				ResponseWriter:   w,
-				statusCode:       http.StatusOK,
-				captureResponse:  config.CaptureHandled5xx,
-				maxResponseBytes: config.Handled5xxMaxBodyBytes,
-			}
+			tracker := newResponseWriterTracker(w, config)
 			tx := startTransaction(duck, r, config)
 			defer func() {
 				if recovered := recover(); recovered != nil {
-					tracker.statusCode = http.StatusInternalServerError
 					if duck != nil && config.CapturePanics {
 						duck.QuackRecoveredPanicContext(r.Context(), recovered, "nethttp_middleware")
 					}
-					captureTransaction(duck, r, tracker.statusCode, tx, true, config)
 					if config.Repanic {
+						captureTransaction(duck, r, tracker.responseStatus(false), tx, true, config)
 						panic(recovered)
 					}
-					if !tracker.wroteHeader {
-						http.Error(tracker, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+					if !tracker.wroteHeader && !tracker.hijacked {
+						http.Error(tracker.writer, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 					}
+					captureTransaction(duck, r, tracker.responseStatus(false), tx, true, config)
 				}
 			}()
 
-			next.ServeHTTP(tracker, r)
+			next.ServeHTTP(tracker.writer, r)
 			captureHandled5xx(duck, r, tracker, config)
-			captureTransaction(duck, r, tracker.statusCode, tx, false, config)
+			captureTransaction(duck, r, tracker.responseStatus(true), tx, false, config)
 		})
 	}
 }
@@ -179,95 +172,6 @@ func IsInternalRequest(r *http.Request) bool {
 	return sdkrequest.IsInternalRequest(r)
 }
 
-type responseWriterTracker struct {
-	http.ResponseWriter
-	statusCode       int
-	wroteHeader      bool
-	captureResponse  bool
-	maxResponseBytes int
-	responseBody     strings.Builder
-	truncated        bool
-}
-
-func (w *responseWriterTracker) WriteHeader(statusCode int) {
-	w.statusCode = statusCode
-	w.wroteHeader = true
-	w.ResponseWriter.WriteHeader(statusCode)
-}
-
-func (w *responseWriterTracker) Write(data []byte) (int, error) {
-	w.captureBody(data)
-	if !w.wroteHeader {
-		w.statusCode = http.StatusOK
-	}
-	w.wroteHeader = true
-	return w.ResponseWriter.Write(data)
-}
-
-func (w *responseWriterTracker) captureBody(data []byte) {
-	if !w.captureResponse || len(data) == 0 || w.truncated {
-		return
-	}
-	remaining := w.maxResponseBytes - w.responseBody.Len()
-	if remaining <= 0 {
-		w.truncated = true
-		return
-	}
-	if len(data) > remaining {
-		_, _ = w.responseBody.Write(data[:remaining])
-		w.truncated = true
-		return
-	}
-	_, _ = w.responseBody.Write(data)
-}
-
-func (w *responseWriterTracker) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	hijacker, ok := w.ResponseWriter.(http.Hijacker)
-	if !ok {
-		return nil, nil, errors.New("response writer does not implement http.Hijacker")
-	}
-	return hijacker.Hijack()
-}
-
-func (w *responseWriterTracker) Flush() {
-	flusher, ok := w.ResponseWriter.(http.Flusher)
-	if !ok {
-		return
-	}
-	flusher.Flush()
-}
-
-func (w *responseWriterTracker) Push(target string, opts *http.PushOptions) error {
-	pusher, ok := w.ResponseWriter.(http.Pusher)
-	if !ok {
-		return http.ErrNotSupported
-	}
-	return pusher.Push(target, opts)
-}
-
-func (w *responseWriterTracker) ReadFrom(r io.Reader) (int64, error) {
-	readerFrom, ok := w.ResponseWriter.(io.ReaderFrom)
-	if !ok {
-		return io.Copy(w.ResponseWriter, r)
-	}
-	return readerFrom.ReadFrom(r)
-}
-
-func (w *responseWriterTracker) Unwrap() http.ResponseWriter {
-	return w.ResponseWriter
-}
-
-func (w *responseWriterTracker) responseSnippet() string {
-	body := strings.TrimSpace(w.responseBody.String())
-	if body == "" {
-		return ""
-	}
-	if w.truncated {
-		return body + "...(truncated)"
-	}
-	return body
-}
-
 func shouldIgnoreRequest(r *http.Request, config Config) bool {
 	if r == nil {
 		return true
@@ -336,7 +240,9 @@ func captureTransaction(
 		return
 	}
 
-	tx.AddMeasurement("http.response.status_code", statusCode, "code")
+	if statusCode != 0 {
+		tx.AddMeasurement("http.response.status_code", statusCode, "code")
+	}
 	tx.Finish(transactionStatusFromHTTPStatus(statusCode))
 	duck.CaptureTransactionContext(r.Context(), tx)
 }
@@ -365,10 +271,11 @@ func captureHandled5xx(
 	responseBody := tracker.responseSnippet()
 	responseMessage := extractResponseMessage(responseBody)
 	details := map[string]any{
-		"method":    method,
-		"path":      path,
-		"status":    tracker.statusCode,
-		"userAgent": userAgent,
+		"method":                method,
+		"path":                  path,
+		"status":                tracker.statusCode,
+		"userAgent":             userAgent,
+		"responseAcceptedBytes": tracker.acceptedBytes,
 	}
 	if responseMessage != "" {
 		details["responseMessage"] = responseMessage
@@ -427,6 +334,8 @@ func shouldCaptureTransaction(sampleRate float64, statusCode int) bool {
 
 func transactionStatusFromHTTPStatus(statusCode int) string {
 	switch {
+	case statusCode == 0:
+		return "unknown_error"
 	case statusCode >= http.StatusInternalServerError:
 		return "internal_error"
 	case statusCode >= http.StatusBadRequest:

@@ -12,7 +12,7 @@ This module follows the DuckBug SDK architecture from `duckbug-sdk-spec`, while 
 
 ## Compatibility
 
-- Go `1.25.13+`. The `go` directive in `go.mod` is the source of truth; this line is a copy for readers and loses to it if the two ever disagree. The floor is a patched release of the 1.25 line: earlier 1.25 patches carry advisories in `crypto/tls`, `encoding/asn1`, `net/url` and `net/http` that this module's HTTP transport reaches.
+- Go `1.26.10+`. The `go` directive in `go.mod` is the source of truth. The HTTP/2 security fixes in `golang.org/x/net` require Go 1.26; the minimum uses the current patched 1.26 release. Upgrading from SDK 0.4 also requires upgrading consumers still using Go 1.25.
 - Every change is validated on that minimum and on the current Go release. The exact versions are the matrix in the CI workflow under `.github/workflows/`, and are not repeated here.
 - Releases are expected to be published via git tags in the `v*` format.
 
@@ -108,6 +108,30 @@ func main() {
     duck.Flush(context.Background())
 }
 ```
+
+### HTTP response observation
+
+The middleware records the first final HTTP status. Informational responses can
+precede it; status 101 is terminal. Writes and supported flush operations establish
+an implicit 200. Streaming and string writes follow the same accounting, and the
+wrapper preserves the underlying optional writer interfaces. Put this middleware
+outside other response-writer middleware, so controller operations from inner
+handlers reach its hooks. An outer writer that exposes controller capabilities
+only through `Unwrap` can let `http.ResponseController` bypass observation; that
+ordering is unsupported and can produce an incorrect recorded status. An outer
+writer is compatible only when it directly delegates those capabilities. Verify
+the writer order when adopting the middleware in an existing server stack.
+
+Handled-failure snippets contain only bytes accepted by the underlying writer.
+`responseAcceptedBytes` counts those bytes; buffering and HEAD responses mean this
+does not prove delivery to the client. Use `WithHandled5xxMaxBodyBytes(0)` to omit
+response snippets while retaining failure status and accepted-byte count.
+
+A panic after a committed response retains that status and does not append a
+fallback body. With `WithRepanic(true)`, an uncommitted panic is rethrown for outer
+recovery; its future HTTP status is unknown, so the transaction omits the status
+measurement. A hijacked connection without an observed status has the same
+unknown-status boundary. An ordinary empty handler defaults to 200 on return.
 
 ## Branded surface
 
