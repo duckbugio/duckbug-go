@@ -3,6 +3,7 @@ module github.com/duckbugio/duckbug-go
 go 1.25.13
 
 require (
+	github.com/felixge/httpsnoop v1.1.0
 	github.com/rs/zerolog v1.35.1
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	go.uber.org/zap v1.28.0

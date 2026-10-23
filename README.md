@@ -109,6 +109,30 @@ func main() {
 }
 ```
 
+### HTTP response observation
+
+The middleware records the first final HTTP status. Informational responses can
+precede it; status 101 is terminal. Writes and supported flush operations establish
+an implicit 200. Streaming and string writes follow the same accounting, and the
+wrapper preserves the underlying optional writer interfaces. Put this middleware
+outside other response-writer middleware, so controller operations from inner
+handlers reach its hooks. An outer writer that exposes controller capabilities
+only through `Unwrap` can let `http.ResponseController` bypass observation; that
+ordering is unsupported and can produce an incorrect recorded status. An outer
+writer is compatible only when it directly delegates those capabilities. Verify
+the writer order when adopting the middleware in an existing server stack.
+
+Handled-failure snippets contain only bytes accepted by the underlying writer.
+`responseAcceptedBytes` counts those bytes; buffering and HEAD responses mean this
+does not prove delivery to the client. Use `WithHandled5xxMaxBodyBytes(0)` to omit
+response snippets while retaining failure status and accepted-byte count.
+
+A panic after a committed response retains that status and does not append a
+fallback body. With `WithRepanic(true)`, an uncommitted panic is rethrown for outer
+recovery; its future HTTP status is unknown, so the transaction omits the status
+measurement. A hijacked connection without an observed status has the same
+unknown-status boundary. An ordinary empty handler defaults to 200 on return.
+
 ## Branded surface
 
 - `Duck` is the main runtime facade.
